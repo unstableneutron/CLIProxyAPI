@@ -256,6 +256,15 @@ type OpenAICompatibility struct {
 	// BaseURL is the base URL for the external OpenAI-compatible API endpoint.
 	BaseURL string `yaml:"base-url" json:"base-url"`
 
+	// WireAPI specifies which OpenAI API format to use for upstream requests.
+	// Valid values: "chat" (default, uses /chat/completions) or "responses" (uses /responses).
+	// Note: "responses" only works when inbound request is also in openai-response format.
+	WireAPI string `yaml:"wire-api,omitempty" json:"wire-api,omitempty"`
+
+	// QueryParams optionally adds query parameters to requests sent to this provider.
+	// Useful for providers like Azure OpenAI that require api-version in the URL.
+	QueryParams map[string]string `yaml:"query-params,omitempty" json:"query-params,omitempty"`
+
 	// APIKeyEntries defines API keys with optional per-key proxy configuration.
 	APIKeyEntries []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
 
