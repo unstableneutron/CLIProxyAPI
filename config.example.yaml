@@ -93,6 +93,7 @@ ws-auth: false
 #openai-compatibility:
 #  - name: "openrouter" # The name of the provider; it will be used in the user agent and other places.
 #    base-url: "https://openrouter.ai/api/v1" # The base URL of the provider.
+#    wire-api: "chat" # Optional: "chat" (default) uses /chat/completions, "responses" uses /responses endpoint
 #    headers:
 #      X-Custom-Header: "custom-value"
 #    # New format with per-key proxy support (recommended):
@@ -107,6 +108,13 @@ ws-auth: false
 #    models: # The models supported by the provider.
 #      - name: "moonshotai/kimi-k2:free" # The actual model name.
 #        alias: "kimi-k2" # The alias used in the API.
+#
+#  # Example: OpenAI Responses API (wire-api: responses)
+#  - name: "openai-responses"
+#    base-url: "https://api.openai.com/v1"
+#    wire-api: "responses"
+#    api-key-entries:
+#      - api-key: "sk-..."
 
 #payload: # Optional payload configuration
 #  default: # Default rules only set parameters when they are missing in the payload.

@@ -943,6 +943,9 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 						attrs["models_hash"] = hash
 					}
 					addConfigHeadersToAttrs(compat.Headers, attrs)
+					if wireAPI := strings.TrimSpace(compat.WireAPI); wireAPI != "" {
+						attrs["wire_api"] = wireAPI
+					}
 					a := &coreauth.Auth{
 						ID:         id,
 						Provider:   providerName,
@@ -976,6 +979,9 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 						attrs["models_hash"] = hash
 					}
 					addConfigHeadersToAttrs(compat.Headers, attrs)
+					if wireAPI := strings.TrimSpace(compat.WireAPI); wireAPI != "" {
+						attrs["wire_api"] = wireAPI
+					}
 					a := &coreauth.Auth{
 						ID:         id,
 						Provider:   providerName,
@@ -1002,6 +1008,9 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 					attrs["models_hash"] = hash
 				}
 				addConfigHeadersToAttrs(compat.Headers, attrs)
+				if wireAPI := strings.TrimSpace(compat.WireAPI); wireAPI != "" {
+					attrs["wire_api"] = wireAPI
+				}
 				a := &coreauth.Auth{
 					ID:         id,
 					Provider:   providerName,
