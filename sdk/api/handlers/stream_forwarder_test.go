@@ -25,6 +25,7 @@ func TestForwardStream_KeepAliveDeferredWhileFrameOpen(t *testing.T) {
 		data <- []byte("data: hello")
 		data <- []byte{}
 		close(data)
+		close(errs)
 	}()
 
 	if cancelErr := waitForwardStream(t, cancelCh, doneCh); cancelErr != nil {
@@ -61,6 +62,7 @@ func TestForwardStream_KeepAliveEmittedBetweenCompleteFrames(t *testing.T) {
 		data <- []byte("data: second")
 		data <- []byte{}
 		close(data)
+		close(errs)
 	}()
 
 	if cancelErr := waitForwardStream(t, cancelCh, doneCh); cancelErr != nil {
@@ -98,6 +100,7 @@ func TestForwardStream_NoKeepAliveWhenIntervalDisabled(t *testing.T) {
 		data <- []byte("data: ok")
 		data <- []byte{}
 		close(data)
+		close(errs)
 	}()
 
 	if cancelErr := waitForwardStream(t, cancelCh, doneCh); cancelErr != nil {
@@ -132,6 +135,7 @@ func TestForwardStream_TerminalErrorWhileFrameOpen(t *testing.T) {
 		time.Sleep(30 * time.Millisecond)
 		errs <- streamErr
 		close(data)
+		close(errs)
 	}()
 
 	cancelErr := waitForwardStream(t, cancelCh, doneCh)
@@ -196,6 +200,7 @@ func TestForwardStream_CloseWhileFrameOpenSeparatesWriteDone(t *testing.T) {
 	go func() {
 		data <- []byte("event: partial")
 		close(data)
+		close(errs)
 	}()
 
 	if cancelErr := waitForwardStream(t, cancelCh, doneCh); cancelErr != nil {
@@ -210,6 +215,27 @@ func TestForwardStream_CloseWhileFrameOpenSeparatesWriteDone(t *testing.T) {
 	}
 	if !strings.Contains(body, "\n\ndata: [DONE]\n\n") {
 		t.Fatalf("done marker should be emitted as a distinct block: %q", body)
+	}
+}
+
+func TestForwardStream_CloseWhileFrameOpenWithoutWriteDoneClosesFrame(t *testing.T) {
+	data := make(chan []byte)
+	errs := make(chan *interfaces.ErrorMessage, 1)
+
+	recorder, cancelCh, doneCh := startForwardStream(t, 0, data, errs, StreamForwardOptions{})
+
+	go func() {
+		data <- []byte("event: partial")
+		close(data)
+		close(errs)
+	}()
+
+	if cancelErr := waitForwardStream(t, cancelCh, doneCh); cancelErr != nil {
+		t.Fatalf("cancel err = %v, want nil", cancelErr)
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "event: partial\n\n") {
+		t.Fatalf("open frame should be terminated on clean EOF: %q", body)
 	}
 }
 

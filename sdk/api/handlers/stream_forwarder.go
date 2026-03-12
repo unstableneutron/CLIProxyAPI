@@ -43,7 +43,10 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 
 	writeChunk := opts.WriteChunk
 	if writeChunk == nil {
-		writeChunk = func([]byte) {}
+		writeChunk = func(chunk []byte) {
+			_, _ = c.Writer.Write(chunk)
+			_, _ = c.Writer.Write([]byte("\n"))
+		}
 	}
 
 	writeKeepAlive := opts.WriteKeepAlive
@@ -65,6 +68,7 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 		keepAliveC = keepAlive.C
 	}
 	var terminalErr *interfaces.ErrorMessage
+	dataC := data
 	errsC := errs
 
 	emitTerminalError := func(errMsg *interfaces.ErrorMessage, frameOpen *bool, pendingKeepAlive *bool) {
@@ -81,42 +85,38 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 		flusher.Flush()
 	}
 
-	readTerminalError := func(wait bool) {
+	readTerminalError := func() {
 		if terminalErr != nil || errsC == nil {
 			return
 		}
-		if !wait {
-			for {
-				select {
-				case errMsg, ok := <-errsC:
-					if !ok {
-						errsC = nil
-						return
-					}
-					if errMsg != nil {
-						terminalErr = errMsg
-						return
-					}
-				default:
+		for {
+			select {
+			case errMsg, ok := <-errsC:
+				if !ok {
+					errsC = nil
 					return
 				}
-			}
-		}
-
-		const terminalErrDrainWindow = 25 * time.Millisecond
-		timer := time.NewTimer(terminalErrDrainWindow)
-		defer timer.Stop()
-		select {
-		case errMsg, ok := <-errsC:
-			if !ok {
-				errsC = nil
+				if errMsg != nil {
+					terminalErr = errMsg
+					return
+				}
+			default:
 				return
 			}
-			if errMsg != nil {
-				terminalErr = errMsg
-			}
-		case <-timer.C:
 		}
+	}
+
+	emitDone := func(frameOpen *bool, pendingKeepAlive *bool) {
+		if *frameOpen {
+			_, _ = c.Writer.Write([]byte("\n\n"))
+			*frameOpen = false
+			*pendingKeepAlive = false
+		}
+		if opts.WriteDone != nil {
+			opts.WriteDone()
+		}
+		flusher.Flush()
+		cancel(nil)
 	}
 
 	var frameOpen bool
@@ -126,27 +126,22 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 		case <-c.Request.Context().Done():
 			cancel(c.Request.Context().Err())
 			return
-		case chunk, ok := <-data:
+		case chunk, ok := <-dataC:
 			if !ok {
-				// Prefer surfacing a terminal error if one is pending.
-				readTerminalError(false)
-				readTerminalError(true)
+				dataC = nil
+				keepAliveC = nil
+				// Wait for errs to deliver terminal status or close before declaring success.
+				readTerminalError()
 				if terminalErr != nil {
 					emitTerminalError(terminalErr, &frameOpen, &pendingKeepAlive)
 					cancel(terminalErr.Error)
 					return
 				}
-				if opts.WriteDone != nil {
-					if frameOpen {
-						_, _ = c.Writer.Write([]byte("\n\n"))
-						frameOpen = false
-						pendingKeepAlive = false
-					}
-					opts.WriteDone()
+				if errsC == nil {
+					emitDone(&frameOpen, &pendingKeepAlive)
+					return
 				}
-				flusher.Flush()
-				cancel(nil)
-				return
+				continue
 			}
 			writeChunk(chunk)
 			flusher.Flush()
@@ -163,17 +158,18 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
 		case errMsg, ok := <-errsC:
 			if !ok {
 				errsC = nil
+				if dataC == nil {
+					emitDone(&frameOpen, &pendingKeepAlive)
+					return
+				}
 				continue
 			}
-			if errMsg != nil {
-				terminalErr = errMsg
-				emitTerminalError(errMsg, &frameOpen, &pendingKeepAlive)
+			if errMsg == nil {
+				continue
 			}
-			var execErr error
-			if errMsg != nil {
-				execErr = errMsg.Error
-			}
-			cancel(execErr)
+			terminalErr = errMsg
+			emitTerminalError(errMsg, &frameOpen, &pendingKeepAlive)
+			cancel(errMsg.Error)
 			return
 		case <-keepAliveC:
 			if frameOpen {
