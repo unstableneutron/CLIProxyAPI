@@ -1,0 +1,204 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-hosted:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: darwin-amd64, runner: macos-15-intel, goos: darwin, goarch: amd64, asset_arch: amd64, format: tar.gz }
+          - { target: darwin-arm64, runner: macos-15, goos: darwin, goarch: arm64, asset_arch: aarch64, format: tar.gz }
+          - { target: windows-amd64, runner: windows-latest, goos: windows, goarch: amd64, asset_arch: amd64, format: zip }
+          - { target: windows-arm64, runner: windows-11-arm, goos: windows, goarch: arm64, asset_arch: aarch64, format: zip }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build plugin and portable archives
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+          FORMAT: ${{ matrix.format }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          commit="$(git rev-parse --short HEAD)"
+          build_date="$(git show -s --format=%cI HEAD)"
+          ldflags="-s -w -X main.Version=$version -X main.Commit=$commit -X main.BuildDate=$build_date"
+          binary=cli-proxy-api; [[ "$GOOS" == windows ]] && binary+=.exe
+          for variant in plugin no-plugin; do
+            dir="dist/$variant"; mkdir -p "$dir"
+            cgo=1; suffix=""; [[ "$variant" == no-plugin ]] && cgo=0 && suffix=_no-plugin
+            CGO_ENABLED="$cgo" GOOS="$GOOS" GOARCH="$GOARCH" go build -buildvcs=false -trimpath -ldflags="$ldflags" -o "$dir/$binary" ./cmd/server/
+            cp LICENSE README.md README_CN.md config.example.yaml "$dir/"
+            archive="dist/CLIProxyAPI_${version}_${GOOS}_${ASSET_ARCH}${suffix}.${FORMAT}"
+            if [[ "$FORMAT" == zip ]]; then
+              (cd "$dir" && 7z a -tzip -mx=9 "${GITHUB_WORKSPACE}/$archive" "$binary" LICENSE README.md README_CN.md config.example.yaml)
+            else
+              tar -C "$dir" -czf "$archive" "$binary" LICENSE README.md README_CN.md config.example.yaml
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/CLIProxyAPI_*
+          if-no-files-found: error
+          retention-days: 1
+
+  build-linux:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-amd64, runner: ubuntu-latest, goarch: amd64, asset_arch: amd64, image: quay.io/pypa/manylinux2014_x86_64 }
+          - { target: linux-arm64, runner: ubuntu-24.04-arm, goarch: arm64, asset_arch: aarch64, image: quay.io/pypa/manylinux2014_aarch64 }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build GLIBC 2.17 plugin and portable archives
+        env:
+          GOARCH: ${{ matrix.goarch }}
+          ASSET_ARCH: ${{ matrix.asset_arch }}
+          MANYLINUX_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"; commit="$(git rev-parse --short HEAD)"; build_date="$(git show -s --format=%cI HEAD)"
+          ldflags="-s -w -X main.Version=$version -X main.Commit=$commit -X main.BuildDate=$build_date"
+          mkdir -p dist/plugin dist/no-plugin
+          docker run --rm -v "$PWD:/src" -w /src \
+            -e GOARCH \
+            -e VERSION="$version" \
+            -e COMMIT="$commit" \
+            -e BUILD_DATE="$build_date" \
+            "$MANYLINUX_IMAGE" bash -euo pipefail -c '
+            go_version="$(sed -n "s/^go //p" go.mod)"; archive="go${go_version}.linux-${GOARCH}.tar.gz"
+            curl -fsSL "https://go.dev/dl/${archive}" -o "/tmp/${archive}"; rm -rf /usr/local/go; tar -C /usr/local -xzf "/tmp/${archive}"
+            CGO_ENABLED=1 /usr/local/go/bin/go build -buildvcs=false -trimpath -ldflags="-s -w -X main.Version=$VERSION -X main.Commit=$COMMIT -X main.BuildDate=$BUILD_DATE" -o dist/plugin/cli-proxy-api ./cmd/server/
+            max="$(readelf --version-info dist/plugin/cli-proxy-api | sed -n "s/.*Name: GLIBC_\([0-9.]*\).*/\1/p" | sort -V | tail -1)"
+            [[ -z "$max" || "$(printf "2.17\n%s\n" "$max" | sort -V | tail -1)" == 2.17 ]] || { echo "requires GLIBC_$max" >&2; exit 1; }
+          '
+          CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -buildvcs=false -trimpath -ldflags="$ldflags" -o dist/no-plugin/cli-proxy-api ./cmd/server/
+          for variant in plugin no-plugin; do cp LICENSE README.md README_CN.md config.example.yaml "dist/$variant/"; done
+          tar -C dist/plugin -czf "dist/CLIProxyAPI_${version}_linux_${ASSET_ARCH}.tar.gz" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          tar -C dist/no-plugin -czf "dist/CLIProxyAPI_${version}_linux_${ASSET_ARCH}_no-plugin.tar.gz" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/CLIProxyAPI_*
+          if-no-files-found: error
+          retention-days: 1
+
+  build-freebsd:
+    name: build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: freebsd-amd64, goarch: amd64, asset_arch: amd64, suffix: '', cgo: true }
+          - { target: freebsd-arm64-no-plugin, goarch: arm64, asset_arch: aarch64, suffix: _no-plugin, cgo: false }
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - id: metadata
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+      - if: matrix.cgo
+        run: sudo apt-get update && sudo apt-get install -y clang lld wget
+      - if: matrix.cgo
+        uses: go-cross/cgo-actions@d0b8f2f2d67923ce9a42d92a7ef0ed1ebd905f0a
+        env:
+          GOFLAGS: -buildvcs=false -trimpath
+        with:
+          dir: .
+          packages: ./cmd/server/
+          targets: ${{ matrix.target }}
+          out-dir: dist/bin
+          output: cli-proxy-api
+          flags: '-ldflags=-s -w'
+          x-flags: |
+            main.Version=${{ steps.metadata.outputs.version }}
+            main.Commit=${{ steps.metadata.outputs.commit }}
+            main.BuildDate=${{ steps.metadata.outputs.build_date }}
+      - if: ${{ !matrix.cgo }}
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist/bin
+          CGO_ENABLED=0 GOOS=freebsd go build -buildvcs=false -trimpath -ldflags="-s -w -X main.Version=${{ steps.metadata.outputs.version }} -X main.Commit=${{ steps.metadata.outputs.commit }} -X main.BuildDate=${{ steps.metadata.outputs.build_date }}" -o dist/bin/cli-proxy-api ./cmd/server/
+      - name: Package archive
+        run: |
+          mkdir -p dist/archive
+          cp dist/bin/cli-proxy-api LICENSE README.md README_CN.md config.example.yaml dist/archive/
+          tar -C dist/archive -czf "dist/CLIProxyAPI_${{ steps.metadata.outputs.version }}_freebsd_${{ matrix.asset_arch }}${{ matrix.suffix }}.tar.gz" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/CLIProxyAPI_*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: publish release
+    runs-on: ubuntu-latest
+    needs: [build-hosted, build-linux, build-freebsd]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Validate and publish assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd dist
+          version="${GITHUB_REF_NAME#v}"
+          expected=(
+            "CLIProxyAPI_${version}_darwin_amd64.tar.gz" "CLIProxyAPI_${version}_darwin_amd64_no-plugin.tar.gz"
+            "CLIProxyAPI_${version}_darwin_aarch64.tar.gz" "CLIProxyAPI_${version}_darwin_aarch64_no-plugin.tar.gz"
+            "CLIProxyAPI_${version}_windows_amd64.zip" "CLIProxyAPI_${version}_windows_amd64_no-plugin.zip"
+            "CLIProxyAPI_${version}_windows_aarch64.zip" "CLIProxyAPI_${version}_windows_aarch64_no-plugin.zip"
+            "CLIProxyAPI_${version}_linux_amd64.tar.gz" "CLIProxyAPI_${version}_linux_amd64_no-plugin.tar.gz"
+            "CLIProxyAPI_${version}_linux_aarch64.tar.gz" "CLIProxyAPI_${version}_linux_aarch64_no-plugin.tar.gz"
+            "CLIProxyAPI_${version}_freebsd_amd64.tar.gz" "CLIProxyAPI_${version}_freebsd_aarch64_no-plugin.tar.gz"
+          )
+          shopt -s nullglob; archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
+          [[ ${#archives[@]} -eq ${#expected[@]} ]] || { printf 'expected %d archives, found %d\n' "${#expected[@]}" "${#archives[@]}" >&2; exit 1; }
+          for asset in "${expected[@]}"; do [[ -f "$asset" ]] || { echo "missing $asset" >&2; exit 1; }; done
+          sha256sum "${archives[@]}" | sort -k2 > checksums.txt
+          if state="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            [[ "$state" == true ]] || { echo "release already published" >&2; exit 1; }
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${archives[@]}" checksums.txt --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false

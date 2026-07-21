@@ -1,5 +1,6 @@
 [tools]
-gh = "latest"
+actionlint = "1.7.12"
+gh = "2.96.0"
 go = "1.26.0"
 
 [tasks."release:build"]
@@ -27,7 +28,7 @@ fi
 
 version="${tag#v}"
 commit="$(git rev-parse --short HEAD)"
-build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+build_date="$(git show -s --format=%cI HEAD)"
 dist_dir="$PWD/dist"
 ldflags="-s -w -X main.Version=$version -X main.Commit=$commit -X main.BuildDate=$build_date"
 rm -rf "$dist_dir"
@@ -110,20 +111,29 @@ TARGETS
 
 (
   cd "$dist_dir"
-  sha256sum CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip | sort -k2 > checksums.txt
+  archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "${archives[@]}" | sort -k2 > checksums.txt
+  else
+    shasum -a 256 "${archives[@]}" | sort -k2 > checksums.txt
+  fi
 )
 echo "Release archives written to $dist_dir"
 '''
 
 [tasks."release:publish"]
-description = "Test, cross-compile, and publish a tagged GitHub release without Actions"
-confirm = { message = "Push main and publish this release directly to GitHub?", default = "no" }
+description = "Test and atomically push main with an annotated release tag for Actions"
+confirm = { message = "Create an annotated tag and atomically push main plus the tag to trigger release workflows?", default = "no" }
 usage = 'arg "<tag>" help="New release tag (for example, v7.2.94)"'
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 
 tag="${usage_tag?}"
+if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+  echo "release tag must look like v7.2.94" >&2
+  exit 1
+fi
 if [[ "$(git branch --show-current)" != main ]]; then
   echo "releases must be published from main" >&2
   exit 1
@@ -136,11 +146,11 @@ fi
 gh auth status
 git fetch origin main --tags
 if ! git merge-base --is-ancestor origin/main HEAD; then
-  echo "main must be a fast-forward of origin/main" >&2
+  echo "local main must contain origin/main" >&2
   exit 1
 fi
-if gh release view "$tag" >/dev/null 2>&1; then
-  echo "GitHub release $tag already exists" >&2
+if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+  echo "local tag $tag already exists" >&2
   exit 1
 fi
 if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
@@ -149,20 +159,9 @@ if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; the
 fi
 
 go test ./...
-mise run release:build "$tag"
-git push origin HEAD:main
-
-origin_url="$(git remote get-url origin)"
-repo="${origin_url%.git}"
-repo="${repo#https://github.com/}"
-repo="${repo#git@github.com:}"
-commit="$(git rev-parse HEAD)"
-shopt -s nullglob
-assets=(dist/CLIProxyAPI_*.tar.gz dist/CLIProxyAPI_*.zip dist/checksums.txt)
-gh release create "$tag" "${assets[@]}" \
-  --repo "$repo" \
-  --target "$commit" \
-  --title "$tag" \
-  --generate-notes \
-  --notes "The archive without a _no-plugin suffix was built natively with dynamic library plugin support. Portable cross-compiled builds have CGO disabled and do not support plugins."
+git tag -a "$tag" -m "Release $tag"
+if ! git push --atomic origin HEAD:main "refs/tags/$tag"; then
+  git tag -d "$tag"
+  exit 1
+fi
 '''
