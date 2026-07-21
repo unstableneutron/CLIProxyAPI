@@ -11,10 +11,15 @@ missing_packages=()
 command -v curl >/dev/null 2>&1 || missing_packages+=(curl)
 command -v git >/dev/null 2>&1 || missing_packages+=(git)
 command -v gcc >/dev/null 2>&1 || missing_packages+=(build-essential)
+command -v zip >/dev/null 2>&1 || missing_packages+=(zip)
 if ((${#missing_packages[@]})); then
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update
-  apt-get install -y --no-install-recommends ca-certificates "${missing_packages[@]}"
+  apt_get=(apt-get)
+  if ((EUID != 0)); then
+    apt_get=(sudo -n apt-get)
+  fi
+  "${apt_get[@]}" update
+  "${apt_get[@]}" install -y --no-install-recommends ca-certificates "${missing_packages[@]}"
 fi
 
 if [[ ! -x "$mise_bin" ]]; then

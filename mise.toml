@@ -1,2 +1,168 @@
 [tools]
+gh = "latest"
 go = "1.26.0"
+
+[tasks."release:build"]
+description = "Build a native plugin release and portable cross-compiled archives"
+usage = 'arg "<tag>" help="Release tag (for example, v7.2.94)"'
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+tag="${usage_tag?}"
+if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+  echo "release tag must look like v7.2.94" >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "working tree must be clean before building a release" >&2
+  exit 1
+fi
+if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+  if [[ "$(git rev-parse "refs/tags/$tag^{commit}")" != "$(git rev-parse HEAD)" ]]; then
+    echo "tag $tag does not point to HEAD" >&2
+    exit 1
+  fi
+fi
+
+version="${tag#v}"
+commit="$(git rev-parse --short HEAD)"
+build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+dist_dir="$PWD/dist"
+ldflags="-s -w -X main.Version=$version -X main.Commit=$commit -X main.BuildDate=$build_date"
+rm -rf "$dist_dir"
+mkdir -p "$dist_dir"
+
+host_goos="$(go env GOOS)"
+host_goarch="$(go env GOARCH)"
+case "$host_goarch" in
+  amd64) host_asset_arch=amd64 ;;
+  arm64) host_asset_arch=aarch64 ;;
+  *)
+    echo "plugin-enabled release builds do not support host architecture $host_goarch" >&2
+    exit 1
+    ;;
+esac
+case "$host_goos" in
+  linux|darwin|freebsd) host_archive_format=tar.gz ;;
+  windows) host_archive_format=zip ;;
+  *)
+    echo "plugin-enabled release builds do not support host OS $host_goos" >&2
+    exit 1
+    ;;
+esac
+
+host_target="$host_goos-$host_goarch-plugin"
+host_archive_dir="$dist_dir/$host_target/archive"
+host_binary_name=cli-proxy-api
+[[ "$host_goos" == windows ]] && host_binary_name=cli-proxy-api.exe
+mkdir -p "$host_archive_dir"
+echo "Building native $host_goos/$host_goarch with plugin support..."
+CGO_ENABLED=1 go build -buildvcs=false -trimpath -ldflags="$ldflags" \
+  -o "$host_archive_dir/$host_binary_name" ./cmd/server/
+cp LICENSE README.md README_CN.md config.example.yaml "$host_archive_dir/"
+host_archive_base="CLIProxyAPI_${version}_${host_goos}_${host_asset_arch}"
+if [[ "$host_archive_format" == zip ]]; then
+  (
+    cd "$host_archive_dir"
+    zip -q -X "$dist_dir/$host_archive_base.zip" \
+      "$host_binary_name" LICENSE README.md README_CN.md config.example.yaml
+  )
+else
+  tar -C "$host_archive_dir" -czf "$dist_dir/$host_archive_base.tar.gz" \
+    "$host_binary_name" LICENSE README.md README_CN.md config.example.yaml
+fi
+
+while read -r goos goarch asset_arch archive_format; do
+  target="$goos-$goarch-no-plugin"
+  archive_dir="$dist_dir/$target/archive"
+  binary_name="cli-proxy-api"
+  [[ "$goos" == windows ]] && binary_name="cli-proxy-api.exe"
+  mkdir -p "$archive_dir"
+
+  echo "Building $goos/$goarch (no plugin support)..."
+  CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+    -buildvcs=false -trimpath -ldflags="$ldflags" \
+    -o "$archive_dir/$binary_name" ./cmd/server/
+  cp LICENSE README.md README_CN.md config.example.yaml "$archive_dir/"
+
+  archive_base="CLIProxyAPI_${version}_${goos}_${asset_arch}_no-plugin"
+  if [[ "$archive_format" == zip ]]; then
+    (
+      cd "$archive_dir"
+      zip -q -X "$dist_dir/$archive_base.zip" \
+        "$binary_name" LICENSE README.md README_CN.md config.example.yaml
+    )
+  else
+    tar -C "$archive_dir" -czf "$dist_dir/$archive_base.tar.gz" \
+      "$binary_name" LICENSE README.md README_CN.md config.example.yaml
+  fi
+done <<'TARGETS'
+linux amd64 amd64 tar.gz
+linux arm64 aarch64 tar.gz
+darwin amd64 amd64 tar.gz
+darwin arm64 aarch64 tar.gz
+windows amd64 amd64 zip
+windows arm64 aarch64 zip
+freebsd amd64 amd64 tar.gz
+freebsd arm64 aarch64 tar.gz
+TARGETS
+
+(
+  cd "$dist_dir"
+  sha256sum CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip | sort -k2 > checksums.txt
+)
+echo "Release archives written to $dist_dir"
+'''
+
+[tasks."release:publish"]
+description = "Test, cross-compile, and publish a tagged GitHub release without Actions"
+confirm = { message = "Push main and publish this release directly to GitHub?", default = "no" }
+usage = 'arg "<tag>" help="New release tag (for example, v7.2.94)"'
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+tag="${usage_tag?}"
+if [[ "$(git branch --show-current)" != main ]]; then
+  echo "releases must be published from main" >&2
+  exit 1
+fi
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "working tree must be clean before publishing a release" >&2
+  exit 1
+fi
+
+gh auth status
+git fetch origin main --tags
+if ! git merge-base --is-ancestor origin/main HEAD; then
+  echo "main must be a fast-forward of origin/main" >&2
+  exit 1
+fi
+if gh release view "$tag" >/dev/null 2>&1; then
+  echo "GitHub release $tag already exists" >&2
+  exit 1
+fi
+if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+  echo "tag $tag already exists on origin" >&2
+  exit 1
+fi
+
+go test ./...
+mise run release:build "$tag"
+git push origin HEAD:main
+
+origin_url="$(git remote get-url origin)"
+repo="${origin_url%.git}"
+repo="${repo#https://github.com/}"
+repo="${repo#git@github.com:}"
+commit="$(git rev-parse HEAD)"
+shopt -s nullglob
+assets=(dist/CLIProxyAPI_*.tar.gz dist/CLIProxyAPI_*.zip dist/checksums.txt)
+gh release create "$tag" "${assets[@]}" \
+  --repo "$repo" \
+  --target "$commit" \
+  --title "$tag" \
+  --generate-notes \
+  --notes "The archive without a _no-plugin suffix was built natively with dynamic library plugin support. Portable cross-compiled builds have CGO disabled and do not support plugins."
+'''
