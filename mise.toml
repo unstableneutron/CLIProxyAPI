@@ -124,16 +124,17 @@ echo "Release archives written to $dist_dir"
 [tasks."release:publish"]
 description = "Test and atomically push main with an annotated release tag for Actions"
 confirm = { message = "Create an annotated tag and atomically push main plus the tag to trigger release workflows?", default = "no" }
-usage = 'arg "<tag>" help="New release tag (for example, v7.2.94)"'
+usage = 'arg "<tag>" help="Fork prerelease tag (for example, v7.2.94-un.0.1.0)"'
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
 
 tag="${usage_tag?}"
-if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
-  echo "release tag must look like v7.2.94" >&2
+if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-un\.[0-9]+(\.[0-9]+)*$ ]]; then
+  echo "fork release tag must look like v7.2.94-un.0.1.0" >&2
   exit 1
 fi
+base_tag="${tag%%-un.*}"
 if [[ "$(git branch --show-current)" != main ]]; then
   echo "releases must be published from main" >&2
   exit 1
@@ -143,7 +144,11 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-gh auth status
+git fetch upstream --tags
+if ! git ls-remote --exit-code --tags upstream "refs/tags/$base_tag" >/dev/null 2>&1; then
+  echo "base tag $base_tag does not exist upstream" >&2
+  exit 1
+fi
 git fetch origin main --tags
 if ! git merge-base --is-ancestor origin/main HEAD; then
   echo "local main must contain origin/main" >&2

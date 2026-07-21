@@ -198,7 +198,11 @@ jobs:
           if state="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null)"; then
             [[ "$state" == true ]] || { echo "release already published" >&2; exit 1; }
           else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --title "$GITHUB_REF_NAME" --generate-notes
+            release_args=("$GITHUB_REF_NAME" --verify-tag --draft --title "$GITHUB_REF_NAME" --generate-notes)
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+              release_args+=(--prerelease --latest=false)
+            fi
+            gh release create "${release_args[@]}"
           fi
           gh release upload "$GITHUB_REF_NAME" "${archives[@]}" checksums.txt --clobber
           gh release edit "$GITHUB_REF_NAME" --draft=false
