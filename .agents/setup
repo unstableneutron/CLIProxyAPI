@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+mise_bin="$HOME/.local/bin/mise"
+upstream_url="https://github.com/router-for-me/CLIProxyAPI"
+cd "$repo_root"
+
+echo "Installing system prerequisites..."
+missing_packages=()
+command -v curl >/dev/null 2>&1 || missing_packages+=(curl)
+command -v git >/dev/null 2>&1 || missing_packages+=(git)
+command -v gcc >/dev/null 2>&1 || missing_packages+=(build-essential)
+if ((${#missing_packages[@]})); then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y --no-install-recommends ca-certificates "${missing_packages[@]}"
+fi
+
+if [[ ! -x "$mise_bin" ]]; then
+  echo "Installing mise..."
+  curl -fsSL https://mise.run | sh
+fi
+export PATH="$HOME/.local/bin:$PATH"
+
+profile_marker="# CLIProxyAPI mise activation"
+touch "$HOME/.bash_profile"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile"; then
+  cat >>"$HOME/.bash_profile" <<'EOF'
+
+# CLIProxyAPI mise activation
+eval "$("$HOME/.local/bin/mise" activate bash)"
+EOF
+fi
+
+echo "Installing project toolchains with mise..."
+"$mise_bin" trust --yes "$repo_root/mise.toml"
+"$mise_bin" install --yes
+
+echo "Downloading Go modules..."
+"$mise_bin" exec -- go mod download
+
+if git -C "$repo_root" remote get-url upstream >/dev/null 2>&1; then
+  git -C "$repo_root" remote set-url upstream "$upstream_url"
+else
+  git -C "$repo_root" remote add upstream "$upstream_url"
+fi
+
+echo "Orb setup complete."

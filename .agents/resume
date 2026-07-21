@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# This repository has no required persistent local services. Toolchains and
+# dependencies are installed by .agents/setup and mise is activated by the
+# login shell profile.
+echo "No local services require reconnection."
