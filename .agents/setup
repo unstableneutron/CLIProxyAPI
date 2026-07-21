@@ -35,6 +35,7 @@ fi
 
 echo "Installing project toolchains with mise..."
 "$mise_bin" trust --yes "$repo_root/mise.toml"
+"$mise_bin" use --global --yes fnox
 "$mise_bin" install --yes
 
 echo "Downloading Go modules..."
