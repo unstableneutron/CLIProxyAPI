@@ -28,19 +28,18 @@ if [[ ! -x "$mise_bin" ]]; then
 fi
 export PATH="$HOME/.local/bin:$PATH"
 
-profile_marker="# CLIProxyAPI mise activation"
+profile_marker="# CLIProxyAPI mise shims"
 touch "$HOME/.bash_profile"
 if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile"; then
   cat >>"$HOME/.bash_profile" <<'EOF'
 
-# CLIProxyAPI mise activation
-eval "$("$HOME/.local/bin/mise" activate bash)"
+# CLIProxyAPI mise shims
+export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"
 EOF
 fi
 
 echo "Installing project toolchains with mise..."
 "$mise_bin" trust --yes "$repo_root/mise.toml"
-"$mise_bin" use --global --yes fnox
 "$mise_bin" install --yes
 
 echo "Downloading Go modules..."

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This repository has no required persistent local services. Toolchains and
-# dependencies are installed by .agents/setup and mise is activated by the
-# login shell profile.
-echo "No local services require reconnection."
+# This repository has no required persistent local services. Confirm that the
+# toolchain restored with the orb snapshot is still available.
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+"$HOME/.local/bin/mise" exec --cd "$repo_root" -- go version >/dev/null
+echo "Project toolchain is ready; no local services require reconnection."
