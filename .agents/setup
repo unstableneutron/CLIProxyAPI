@@ -38,6 +38,15 @@ export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:$PATH"
 EOF
 fi
 
+fnox_profile_marker="# fnox non-interactive mode"
+if ! grep -Fqx "$fnox_profile_marker" "$HOME/.bash_profile"; then
+  cat >>"$HOME/.bash_profile" <<'EOF'
+
+# fnox non-interactive mode
+export FNOX_NON_INTERACTIVE=true
+EOF
+fi
+
 echo "Installing project toolchains with mise..."
 "$mise_bin" trust --yes "$repo_root/mise.toml"
 "$mise_bin" install --yes
@@ -47,20 +56,23 @@ fnox_dir="$HOME/.config/fnox"
 fnox_config="$fnox_dir/config.toml"
 age_key="$fnox_dir/age.txt"
 install -d -m 700 "$fnox_dir"
-if [[ ! -f "$age_key" ]]; then
-  umask 077
-  "$mise_bin" exec -- age-keygen -o "$age_key" >/dev/null 2>&1
-fi
-chmod 600 "$age_key"
-if [[ ! -f "$fnox_config" ]]; then
-  "$mise_bin" exec -- fnox init --global --skip-wizard >/dev/null
-fi
-if ! FNOX_NON_INTERACTIVE=true "$mise_bin" exec -- fnox --no-color provider list | grep -Fqx local; then
-  age_recipient="$("$mise_bin" exec -- age-keygen -y "$age_key")"
-  printf '\n[providers.local]\ntype = "age"\nrecipients = ["%s"]\nkey_file = "%s"\n' \
-    "$age_recipient" "$age_key" >>"$fnox_config"
-fi
-chmod 600 "$fnox_config"
+(
+  flock 9
+  if [[ ! -f "$age_key" ]]; then
+    umask 077
+    "$mise_bin" exec -- age-keygen -o "$age_key" >/dev/null 2>&1
+  fi
+  chmod 600 "$age_key"
+  if [[ ! -f "$fnox_config" ]]; then
+    "$mise_bin" exec -- fnox init --global --skip-wizard >/dev/null
+  fi
+  if ! grep -Fqx '[providers.local]' "$fnox_config"; then
+    age_recipient="$("$mise_bin" exec -- age-keygen -y "$age_key")"
+    printf '\n[providers.local]\ntype = "age"\nrecipients = ["%s"]\nkey_file = "%s"\n' \
+      "$age_recipient" "$age_key" >>"$fnox_config"
+  fi
+  chmod 600 "$fnox_config"
+) 9>"$fnox_dir/setup.lock"
 FNOX_NON_INTERACTIVE=true "$mise_bin" exec -- fnox --no-color provider test local >/dev/null
 
 echo "Downloading Go modules..."
