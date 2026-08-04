@@ -1,8 +1,10 @@
 [tools]
 actionlint = "1.7.12"
+age = "1.2.1"
 fnox = "1.32.0"
 gh = "2.96.0"
 go = "1.26.0"
+op = "2.38.1"
 
 [tasks."release:build"]
 description = "Build a native plugin release and portable cross-compiled archives"
