@@ -1,5 +1,6 @@
 [tools]
 actionlint = "1.7.12"
+fnox = "1.32.0"
 gh = "2.96.0"
 go = "1.26.0"
 
