@@ -107,12 +107,14 @@ func (c *guardedPluginClient) ShutdownContext(ctx context.Context) {
 	inner := c.inner
 	c.inner = nil
 	done := c.shutdownDone
-	c.mu.Unlock()
 
-	// Detach callback dispatch immediately, even when native calls outlive ctx.
+	// Serialize callback detachment with concurrent shutdown callers, including
+	// those with canceled contexts. retire only removes Go dispatch state; it
+	// must not execute native code or wait for active calls under this lock.
 	if client, ok := inner.(interface{ retire() }); ok {
 		client.retire()
 	}
+	c.mu.Unlock()
 
 	go func() {
 		c.mu.Lock()

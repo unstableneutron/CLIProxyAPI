@@ -68,3 +68,36 @@ func TestGuardedPluginClientShutdownContextDetachesBlockedCall(t *testing.T) {
 		t.Fatalf("shutdown calls after active call exits = %d, want 1", got)
 	}
 }
+
+type retiringGuardPluginClient struct {
+	blockingGuardPluginClient
+	retiring chan struct{}
+	retired  chan struct{}
+}
+
+func (c *retiringGuardPluginClient) retire() {
+	close(c.retiring)
+	<-c.retired
+}
+
+func TestGuardedPluginClientSerializesRetirement(t *testing.T) {
+	inner := &retiringGuardPluginClient{retiring: make(chan struct{}), retired: make(chan struct{})}
+	guarded := newGuardedPluginClient(inner)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		guarded.ShutdownContext(ctx)
+		close(done)
+	}()
+	<-inner.retiring
+	// A second shutdown observes closed under this mutex. It must not be able
+	// to return for a canceled context before callback detachment finishes.
+	if guarded.mu.TryLock() {
+		guarded.mu.Unlock()
+		t.Error("shutdown state became observable before callback retirement")
+	}
+	close(inner.retired)
+	<-done
+	guarded.Shutdown()
+}
