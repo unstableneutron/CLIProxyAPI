@@ -5,6 +5,4 @@ set -euo pipefail
 # toolchain restored with the orb snapshot is still available.
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 "$HOME/.local/bin/mise" exec --cd "$repo_root" -- go version >/dev/null
-FNOX_NON_INTERACTIVE=true "$HOME/.local/bin/mise" exec --cd "$repo_root" -- \
-  fnox --no-color provider test local >/dev/null
-echo "Project toolchain and local fnox provider are ready; no services require reconnection."
+echo "Project toolchain is ready; no services require reconnection."
