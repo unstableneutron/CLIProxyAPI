@@ -284,7 +284,11 @@ func main() {
 			homeCfg.DisableClusterDiscovery = true
 		}
 		homeClient = home.New(homeCfg)
-		defer homeClient.Close()
+		defer func() {
+			if homeClient != nil {
+				homeClient.Close()
+			}
+		}()
 
 		ctxHomeConfig, cancelHomeConfig := context.WithTimeout(context.Background(), 30*time.Second)
 		raw, errGetConfig := homeClient.GetConfig(ctxHomeConfig)
@@ -303,7 +307,7 @@ func main() {
 			parsed = &config.Config{}
 		}
 		parsed.Home = homeCfg
-		parsed.Port = 8317 // Default to 8317 for home mode, can be overridden by home config
+		parsed.Port = config.NormalizeHomePort(parsed.Port)
 		parsed.UsageStatisticsEnabled = true
 		pluginSyncCfg := *parsed
 		parsed.Plugins.StoreAuth = nil
@@ -621,6 +625,12 @@ func main() {
 		if errHomePluginLoad != nil {
 			return
 		}
+	}
+	if homeClient != nil {
+		// The bootstrap client is not owned by the runtime service. Close it after
+		// the final startup report so it cannot retain an idle RESP connection.
+		homeClient.Close()
+		homeClient = nil
 	}
 	if pluginHost.HasTriggeredCommandLineFlags() {
 		if exitCode, handled := pluginHost.ExecuteCommandLine(context.Background(), os.Args[0], os.Args[1:], configFilePath, flag.CommandLine); handled {

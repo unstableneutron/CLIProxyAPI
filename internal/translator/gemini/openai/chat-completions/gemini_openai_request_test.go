@@ -224,6 +224,49 @@ func TestConvertOpenAIRequestToGeminiSkipsEmptyAssistantMessages(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIRequestToGemini_MidSessionDeveloperMessageDoesNotMutateSystemInstruction(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3-flash",
+		"messages": [
+			{"role": "system", "content": "You are a helpful assistant"},
+			{"role": "user", "content": "Turn 1 user"},
+			{"role": "assistant", "content": "Turn 1 assistant"},
+			{"role": "developer", "content": "<image_resize_notice>Image 1 was resized to 800x600</image_resize_notice>"},
+			{"role": "user", "content": "Turn 2 user"}
+		]
+	}`
+
+	result := ConvertOpenAIRequestToGemini("gemini-3-flash", []byte(inputJSON), false)
+	output := gjson.ParseBytes(result)
+
+	// systemInstruction must contain only original system prompt
+	sysParts := output.Get("systemInstruction.parts").Array()
+	if len(sysParts) != 1 {
+		t.Fatalf("systemInstruction parts = %d, want 1. Output: %s", len(sysParts), result)
+	}
+	if got := sysParts[0].Get("text").String(); got != "You are a helpful assistant" {
+		t.Fatalf("systemInstruction text = %q, want %q", got, "You are a helpful assistant")
+	}
+
+	// contents must contain user, model, user (demoted dev message), user
+	contents := output.Get("contents").Array()
+	if len(contents) != 4 {
+		t.Fatalf("contents length = %d, want 4. Output: %s", len(contents), result)
+	}
+	if contents[0].Get("role").String() != "user" || contents[0].Get("parts.0.text").String() != "Turn 1 user" {
+		t.Fatalf("turn 0 mismatch: %s", contents[0].Raw)
+	}
+	if contents[1].Get("role").String() != "model" || contents[1].Get("parts.0.text").String() != "Turn 1 assistant" {
+		t.Fatalf("turn 1 mismatch: %s", contents[1].Raw)
+	}
+	if contents[2].Get("role").String() != "user" || contents[2].Get("parts.0.text").String() != "<image_resize_notice>Image 1 was resized to 800x600</image_resize_notice>" {
+		t.Fatalf("turn 2 mismatch: %s", contents[2].Raw)
+	}
+	if contents[3].Get("role").String() != "user" || contents[3].Get("parts.0.text").String() != "Turn 2 user" {
+		t.Fatalf("turn 3 mismatch: %s", contents[3].Raw)
+	}
+}
+
 func TestConvertOpenAIRequestToGeminiMapsMaxTokens(t *testing.T) {
 	tests := []struct {
 		name string
@@ -297,5 +340,121 @@ func TestConvertOpenAIRequestToGeminiCleansToolSchemaRequiredFields(t *testing.T
 	}
 	if got := required[1].String(); got != "industry" {
 		t.Fatalf("required[1] = %q, want industry. Schema: %s", got, schema.Raw)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiResponseFormatJSONSchema(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.1-flash-lite",
+		"generationConfig": {
+			"temperature": 0.2,
+			"responseSchema": {"type": "string"}
+		},
+		"messages": [{"role": "user", "content": "Return structured JSON."}],
+		"response_format": {
+			"type": "json_schema",
+			"json_schema": {
+				"name": "response",
+				"strict": true,
+				"schema": {
+					"type": "object",
+					"properties": {"cleanedContent": {"type": "string"}},
+					"required": ["cleanedContent"],
+					"additionalProperties": false
+				}
+			}
+		}
+	}`
+
+	output := ConvertOpenAIRequestToGemini("gemini-3.1-flash-lite", []byte(inputJSON), false)
+	generationConfig := gjson.GetBytes(output, "generationConfig")
+
+	if got := generationConfig.Get("responseMimeType").String(); got != "application/json" {
+		t.Fatalf("responseMimeType = %q, want application/json. Output: %s", got, output)
+	}
+	schema := generationConfig.Get("responseJsonSchema")
+	if !schema.Exists() {
+		t.Fatalf("responseJsonSchema missing. Output: %s", output)
+	}
+	if generationConfig.Get("responseSchema").Exists() {
+		t.Fatalf("responseSchema should be removed. Output: %s", output)
+	}
+	if additionalProperties := schema.Get("additionalProperties"); !additionalProperties.Exists() || additionalProperties.Bool() {
+		t.Fatalf("additionalProperties = %s, want false. Output: %s", additionalProperties.Raw, output)
+	}
+	if got := generationConfig.Get("temperature").Float(); got != 0.2 {
+		t.Fatalf("temperature = %v, want 0.2. Output: %s", got, output)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiResponseFormatJSONObject(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.1-flash-lite",
+		"generationConfig": {"temperature": 0.6},
+		"messages": [{"role": "user", "content": "Return a JSON object."}],
+		"response_format": {"type": "json_object"}
+	}`
+
+	output := ConvertOpenAIRequestToGemini("gemini-3.1-flash-lite", []byte(inputJSON), false)
+	generationConfig := gjson.GetBytes(output, "generationConfig")
+
+	if got := generationConfig.Get("responseMimeType").String(); got != "application/json" {
+		t.Fatalf("responseMimeType = %q, want application/json. Output: %s", got, output)
+	}
+	if generationConfig.Get("responseJsonSchema").Exists() {
+		t.Fatalf("responseJsonSchema should not be set for json_object. Output: %s", output)
+	}
+	if got := generationConfig.Get("temperature").Float(); got != 0.6 {
+		t.Fatalf("temperature = %v, want 0.6. Output: %s", got, output)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiResponseFormatJSONSchemaWithoutSchema(t *testing.T) {
+	inputJSON := `{
+		"model": "gemini-3.1-flash-lite",
+		"messages": [{"role": "user", "content": "Return structured JSON."}],
+		"response_format": {"type": "json_schema", "json_schema": {"name": "response"}}
+	}`
+
+	output := ConvertOpenAIRequestToGemini("gemini-3.1-flash-lite", []byte(inputJSON), false)
+	generationConfig := gjson.GetBytes(output, "generationConfig")
+
+	if got := generationConfig.Get("responseMimeType").String(); got != "application/json" {
+		t.Fatalf("responseMimeType = %q, want application/json. Output: %s", got, output)
+	}
+	if generationConfig.Get("responseJsonSchema").Exists() {
+		t.Fatalf("responseJsonSchema should not be set without a schema. Output: %s", output)
+	}
+}
+
+func TestConvertOpenAIRequestToGeminiResponseFormatNoOp(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "absent",
+			body: `{"model":"gemini-3.1-flash-lite","messages":[{"role":"user","content":"plain text"}],"temperature":0.5}`,
+		},
+		{
+			name: "unknown type",
+			body: `{"model":"gemini-3.1-flash-lite","messages":[{"role":"user","content":"plain text"}],"temperature":0.5,"response_format":{"type":"text"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := ConvertOpenAIRequestToGemini("gemini-3.1-flash-lite", []byte(tt.body), false)
+			generationConfig := gjson.GetBytes(output, "generationConfig")
+			if generationConfig.Get("responseMimeType").Exists() {
+				t.Fatalf("responseMimeType should not be set. Output: %s", output)
+			}
+			if generationConfig.Get("responseJsonSchema").Exists() {
+				t.Fatalf("responseJsonSchema should not be set. Output: %s", output)
+			}
+			if got := generationConfig.Get("temperature").Float(); got != 0.5 {
+				t.Fatalf("temperature = %v, want 0.5. Output: %s", got, output)
+			}
+		})
 	}
 }
