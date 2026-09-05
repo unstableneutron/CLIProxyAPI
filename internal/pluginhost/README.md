@@ -99,3 +99,9 @@ proxy deployment; they cannot alone certify the 5% proxy CPU or 1 ms added p99
 interchunk budgets. Do not execute arbitrary downloaded plugins: review and pin
 source/artifacts first. `TestNativePinnedExample` runs a checksummed unchanged
 model example in a fresh process without attempting Go-library unloading.
+
+`CLIPROXY_TEST_JSHANDLER=1` enables `TestNativePinnedJSHandler` and
+`BenchmarkNativeJSHandler` for reviewed, source-built JS Handler v1.0.1 (the
+source commit is pinned in the test). It checks no-script request/stream
+passthrough and a local script invoking the host log callback. Supply the same
+library path/checksum variables; run each case in a fresh process.
