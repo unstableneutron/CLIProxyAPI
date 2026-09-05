@@ -1,4 +1,4 @@
-//go:build !cgo && !windows
+//go:build !windows && !(cgo && (linux || darwin || freebsd)) && !(plugin_purego && (linux || darwin) && !android && !ios && (amd64 || arm64))
 
 package pluginhost
 
@@ -7,7 +7,7 @@ import "fmt"
 type unsupportedLoader struct{}
 
 func (unsupportedLoader) Open(file pluginFile, host *Host) (pluginClient, error) {
-	return nil, fmt.Errorf("standard dynamic library plugin loading requires cgo on this platform: %s", file.Path)
+	return nil, fmt.Errorf("dynamic library plugin loading is not available in this build: %s", file.Path)
 }
 
 func defaultPluginLoader() pluginLoader {

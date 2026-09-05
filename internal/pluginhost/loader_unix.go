@@ -1,4 +1,4 @@
-//go:build cgo && (linux || darwin || freebsd)
+//go:build cgo && (linux || darwin || freebsd) && !(plugin_purego && (linux || darwin) && !android && !ios && (amd64 || arm64))
 
 package pluginhost
 

@@ -1,6 +1,6 @@
 package pluginhost
 
-// SupportPluginHeaderValue reports whether the current binary was built with CGO enabled.
+// SupportPluginHeaderValue reports whether this build includes a native plugin loader.
 func SupportPluginHeaderValue() string {
 	return supportPluginValue
 }

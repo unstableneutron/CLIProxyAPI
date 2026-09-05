@@ -109,6 +109,11 @@ func (c *guardedPluginClient) ShutdownContext(ctx context.Context) {
 	done := c.shutdownDone
 	c.mu.Unlock()
 
+	// Detach callback dispatch immediately, even when native calls outlive ctx.
+	if client, ok := inner.(interface{ retire() }); ok {
+		client.retire()
+	}
+
 	go func() {
 		c.mu.Lock()
 		for c.calls > 0 {
