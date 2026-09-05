@@ -1,8 +1,12 @@
 # Native loader backends
 
 The `plugin_purego` backend is an **opt-in migration candidate**, not a claim of
-production parity. Keep the default backend for production until platform,
-compatibility, lifecycle and full-proxy performance acceptance checks pass.
+production parity. Restart-only reload is the accepted lifecycle policy for
+this backend. Linux amd64 has runtime validation; macOS runtime validation,
+including arm64, is deferred to local builds and testing. Linux arm64 runtime
+soak and full-proxy CPU, latency and usage qualification remain outstanding.
+Cross-compilation does not establish runtime parity. Default packaging remains
+unchanged; select this backend explicitly with `-tags plugin_purego`.
 
 | Build | Backend |
 | --- | --- |
