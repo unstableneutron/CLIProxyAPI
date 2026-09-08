@@ -1409,6 +1409,10 @@ func resultErrorFromError(err error) *Error {
 		resultErr = cloneError(sourceErr)
 	} else {
 		resultErr = &Error{Message: err.Error()}
+		var retryHint interface{ Retryable() bool }
+		if errors.As(err, &retryHint) {
+			resultErr.Retryable = retryHint.Retryable()
+		}
 	}
 	if resultErr.HTTPStatus == 0 {
 		resultErr.HTTPStatus = statusCodeFromError(err)

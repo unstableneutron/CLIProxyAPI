@@ -2,6 +2,7 @@ package pluginhost
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -51,7 +52,7 @@ func TestStreamBridgeCloseUnblocksPendingEmit(t *testing.T) {
 	default:
 	}
 
-	bridge.close(streamID, "")
+	bridge.close(streamID, nil)
 
 	select {
 	case err := <-emitDone:
@@ -127,7 +128,7 @@ func TestStreamBridgeCleanupAbortsPendingGracefulClose(t *testing.T) {
 			t.Fatalf("fill stream buffer: %v", err)
 		}
 	}
-	bridge.close(streamID, "plugin stream failed")
+	bridge.close(streamID, errors.New("plugin stream failed"))
 
 	cleanup()
 
@@ -145,7 +146,7 @@ func TestStreamBridgeCloseDeliversTerminalError(t *testing.T) {
 	bridge := newStreamBridge()
 	streamID, chunks, _ := bridge.open(context.Background())
 
-	bridge.close(streamID, "plugin stream failed")
+	bridge.close(streamID, errors.New("plugin stream failed"))
 
 	chunk, ok := <-chunks
 	if !ok {
@@ -171,7 +172,7 @@ func TestStreamBridgeClosePreservesTerminalErrorWhenBufferIsFull(t *testing.T) {
 
 	closeDone := make(chan struct{})
 	go func() {
-		bridge.close(streamID, "plugin stream failed")
+		bridge.close(streamID, errors.New("plugin stream failed"))
 		close(closeDone)
 	}()
 	select {

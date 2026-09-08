@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -40,6 +41,9 @@ type rpcError struct {
 	Code       string
 	message    string
 	statusCode int
+	scope      string
+	retryable  bool
+	retryAfter *time.Duration
 }
 
 func (e rpcError) Error() string {
@@ -48,6 +52,41 @@ func (e rpcError) Error() string {
 
 func (e rpcError) StatusCode() int {
 	return e.statusCode
+}
+
+func (e rpcError) IsRequestScoped() bool    { return e.scope == "request" }
+func (e rpcError) IsCredentialScoped() bool { return e.scope == "credential" }
+func (e rpcError) Retryable() bool          { return e.retryable }
+func (e rpcError) RetryAfter() *time.Duration {
+	if e.retryAfter == nil {
+		return nil
+	}
+	delay := *e.retryAfter
+	return &delay
+}
+
+// decodePluginFailure is shared by RPC replies and streaming callbacks so that
+// the transport used by an executor does not change credential health semantics.
+func decodePluginFailure(failure *pluginabi.Error, legacyMessage string) error {
+	if failure == nil {
+		if legacyMessage == "" {
+			return nil
+		}
+		return fmt.Errorf("%s", legacyMessage)
+	}
+	message := strings.TrimSpace(failure.Message)
+	if message == "" {
+		message = "plugin call failed"
+	}
+	err := rpcError{
+		Code: strings.TrimSpace(failure.Code), message: message,
+		statusCode: failure.HTTPStatus, scope: failure.Scope, retryable: failure.Retryable,
+	}
+	if ms := failure.RetryAfterMS; ms != nil && *ms >= 0 && *ms <= int64((1<<63-1)/time.Millisecond) {
+		delay := time.Duration(*ms) * time.Millisecond
+		err.retryAfter = &delay
+	}
+	return err
 }
 
 type rpcResponseNormalizer struct {
@@ -314,15 +353,7 @@ func decodeEnvelopeResult[T any](envelope pluginabi.Envelope) (T, error) {
 	var zero T
 	if !envelope.OK {
 		if envelope.Error != nil {
-			message := strings.TrimSpace(envelope.Error.Message)
-			if message == "" {
-				message = "plugin call failed"
-			}
-			return zero, rpcError{
-				Code:       strings.TrimSpace(envelope.Error.Code),
-				message:    message,
-				statusCode: envelope.Error.HTTPStatus,
-			}
+			return zero, decodePluginFailure(envelope.Error, "")
 		}
 		return zero, fmt.Errorf("plugin call failed")
 	}

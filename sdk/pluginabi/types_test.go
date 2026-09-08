@@ -27,8 +27,8 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 }
 
 func TestMethodNamesAreStable(t *testing.T) {
-	if SchemaVersion != 5 {
-		t.Fatalf("SchemaVersion = %d, want 5", SchemaVersion)
+	if SchemaVersion != 6 {
+		t.Fatalf("SchemaVersion = %d, want 6", SchemaVersion)
 	}
 	if SchemaVersionWebSocketResponseObserver != 4 {
 		t.Fatalf("SchemaVersionWebSocketResponseObserver = %d, want 4", SchemaVersionWebSocketResponseObserver)

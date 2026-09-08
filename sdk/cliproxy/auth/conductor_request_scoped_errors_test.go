@@ -57,6 +57,23 @@ type customStatusError struct {
 	retryAfter *time.Duration
 }
 
+type customRetryHintError struct {
+	customStatusError
+	retryable bool
+}
+
+func (e customRetryHintError) Retryable() bool { return e.retryable }
+
+func TestResultErrorPreservesRetryHint(t *testing.T) {
+	for _, retryable := range []bool{false, true} {
+		err := customRetryHintError{customStatusError: customStatusError{code: 429, msg: "quota"}, retryable: retryable}
+		result := resultErrorFromError(markUpstreamExecutionAttempt(err))
+		if result.HTTPStatus != 429 || result.Retryable != retryable {
+			t.Fatalf("lost error evidence: %+v", result)
+		}
+	}
+}
+
 func TestUnwrapExecutionBoundaryErrorRemovesInternalMarkers(t *testing.T) {
 	t.Parallel()
 

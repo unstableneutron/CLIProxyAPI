@@ -14,7 +14,9 @@ const (
 	// Version 5 omits HistoryChunks on payload stream chunks (ChunkIndex >= 0);
 	// those fields remain on StreamChunkHeaderInitIndex only. Plugins that still need
 	// per-chunk history chunks should keep schema_version < 5.
-	SchemaVersion uint32 = 5
+	// Version 6 preserves scoped failures and retry hints in envelopes and stream
+	// callbacks. Plugins requiring these semantics must declare version 6.
+	SchemaVersion uint32 = 6
 	// SchemaVersionStreamChunkOmitRequestBody is the first schema version that omits
 	// request bodies on payload stream-chunk interceptor calls.
 	SchemaVersionStreamChunkOmitRequestBody uint32 = 3
@@ -109,4 +111,10 @@ type Error struct {
 	Message    string `json:"message"`
 	Retryable  bool   `json:"retryable,omitempty"`
 	HTTPStatus int    `json:"http_status,omitempty"`
+	// Scope is "request", "credential", or "model". Empty or unknown values
+	// retain the host's default status-based classification.
+	Scope string `json:"scope,omitempty"`
+	// RetryAfterMS is a nonnegative relative delay in milliseconds. A pointer
+	// distinguishes an explicit zero delay from an absent hint.
+	RetryAfterMS *int64 `json:"retry_after_ms,omitempty"`
 }

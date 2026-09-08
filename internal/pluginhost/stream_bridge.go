@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -39,19 +40,21 @@ type streamBridgeEmit struct {
 }
 
 type streamBridgeClose struct {
-	errorMessage string
-	accepted     chan struct{}
+	err      error
+	accepted chan struct{}
 }
 
 type rpcStreamEmitRequest struct {
-	StreamID string `json:"stream_id"`
-	Payload  []byte `json:"payload,omitempty"`
-	Error    string `json:"error,omitempty"`
+	StreamID string           `json:"stream_id"`
+	Payload  []byte           `json:"payload,omitempty"`
+	Error    string           `json:"error,omitempty"`
+	Failure  *pluginabi.Error `json:"failure,omitempty"`
 }
 
 type rpcStreamCloseRequest struct {
-	StreamID string `json:"stream_id"`
-	Error    string `json:"error,omitempty"`
+	StreamID string           `json:"stream_id"`
+	Error    string           `json:"error,omitempty"`
+	Failure  *pluginabi.Error `json:"failure,omitempty"`
 }
 
 func newStreamBridge() *streamBridge {
@@ -97,8 +100,8 @@ func (s *streamBridgeStream) run() {
 		case request := <-s.closes:
 			s.markClosed()
 			close(request.accepted)
-			if request.errorMessage != "" {
-				queue = append(queue, pluginapi.ExecutorStreamChunk{Err: fmt.Errorf("%s", request.errorMessage)})
+			if request.err != nil {
+				queue = append(queue, pluginapi.ExecutorStreamChunk{Err: request.err})
 			}
 			for len(queue) > 0 {
 				select {
@@ -161,13 +164,13 @@ func (s *streamBridgeStream) emit(ctx context.Context, chunk pluginapi.ExecutorS
 	return <-request.done
 }
 
-func (s *streamBridgeStream) close(errorMessage string) {
+func (s *streamBridgeStream) close(err error) {
 	if s == nil {
 		return
 	}
 	request := streamBridgeClose{
-		errorMessage: errorMessage,
-		accepted:     make(chan struct{}),
+		err:      err,
+		accepted: make(chan struct{}),
 	}
 	select {
 	case <-s.finished:
@@ -228,7 +231,7 @@ func (b *streamBridge) emit(ctx context.Context, id string, chunk pluginapi.Exec
 	return nil
 }
 
-func (b *streamBridge) close(id string, errorMessage string) {
+func (b *streamBridge) close(id string, err error) {
 	if b == nil || id == "" {
 		return
 	}
@@ -239,5 +242,5 @@ func (b *streamBridge) close(id string, errorMessage string) {
 	if stream == nil {
 		return
 	}
-	stream.close(errorMessage)
+	stream.close(err)
 }
