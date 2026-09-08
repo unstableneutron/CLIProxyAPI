@@ -14,9 +14,12 @@ const (
 	// Version 5 omits HistoryChunks on payload stream chunks (ChunkIndex >= 0);
 	// those fields remain on StreamChunkHeaderInitIndex only. Plugins that still need
 	// per-chunk history chunks should keep schema_version < 5.
-	// Version 6 preserves scoped failures and retry hints in envelopes and stream
-	// callbacks. Plugins requiring these semantics must declare version 6.
-	SchemaVersion uint32 = 6
+	// Version 6 preserves raw JSON bodies for plugin management responses.
+	// Plugins that still require HTML entity escaping on JSON response strings
+	// should keep schema_version < 6.
+	// Version 7 preserves scoped failures and retry hints in envelopes and stream
+	// callbacks. Plugins requiring these semantics must declare version 7.
+	SchemaVersion uint32 = 7
 	// SchemaVersionStreamChunkOmitRequestBody is the first schema version that omits
 	// request bodies on payload stream-chunk interceptor calls.
 	SchemaVersionStreamChunkOmitRequestBody uint32 = 3
@@ -26,6 +29,12 @@ const (
 	// SchemaVersionStreamChunkOmitHistory is the first schema version that omits
 	// history chunks on payload stream-chunk interceptor calls.
 	SchemaVersionStreamChunkOmitHistory uint32 = 5
+	// SchemaVersionRawManagementResponse is the first schema version where plugin
+	// management JSON responses are preserved without HTML-escaping strings.
+	SchemaVersionRawManagementResponse uint32 = 6
+	// SchemaVersionFailureDetails is the first schema version preserving native
+	// failure scope and retry hints, including asynchronous stream callbacks.
+	SchemaVersionFailureDetails uint32 = 7
 )
 
 const (

@@ -1,7 +1,7 @@
 # Native plugin failure contract
 
-Schema 6 adds typed failure details without changing native ABI v1. A plugin
-that depends on these semantics must return `schema_version: 6` at registration
+Schema 7 adds typed failure details without changing native ABI v1. A plugin
+that depends on these semantics must return `schema_version: 7` at registration
 so older hosts reject it rather than silently losing credential-health evidence.
 Older plugin schemas and plain string stream errors remain supported.
 
