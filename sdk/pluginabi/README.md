@@ -1,4 +1,4 @@
-# Native plugin failure contract
+# Native plugin contract extensions
 
 Schema 7 adds typed failure details without changing native ABI v1. A plugin
 that depends on these semantics must return `schema_version: 7` at registration
@@ -30,6 +30,25 @@ under `failure`, alongside `stream_id`. When both `failure` and the legacy
 from omission. Negative or overflowing durations are ignored. `retryable` is
 preserved as evidence, not authority to override host retry/commitment policy.
 The host continues to own cooldown, eligibility and semantic-commit decisions.
+
+## Authenticated HTTP ingress
+
+Schema 8 adds `ingress_proxy`, `ingress.register`, and `ingress.handle`. A
+plugin declaring ingress must return schema 8 or later; registration rejects
+older declarations. Existing schema-7 provider binaries remain supported.
+
+The plugin declares bounded method/prefix/origin rules, then maps request
+metadata to a data-only proxy plan. Concrete server routes take precedence.
+The host requires a successful frontend authentication result, validates the
+plan, selects credentials from the shared active pool, and streams original
+request/response bodies with cancellation. Stored credentials never appear in
+the ingress RPC. Redirects and protocol upgrades are not supported. Native
+plugins remain trusted in-process code, not a security sandbox.
+
+Credential selection does not impose a per-caller account ACL: authenticated
+callers share the configured pool. Deployments requiring account-specific
+authorization must not treat this capability as providing it. The precise
+route, selector, and injection types are documented in `sdk/pluginapi`.
 
 ## HTTP TLS curve profiles
 
