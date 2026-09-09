@@ -1,7 +1,46 @@
 [tools]
 actionlint = "1.7.12"
 gh = "2.96.0"
-go = "1.26.0"
+# Build and verification use the patched Go 1.26 point release vetted for publication.
+go = "1.26.6"
+
+[tasks.build]
+description = "Build the native-plugin server binary"
+env = { CGO_ENABLED = "1" }
+run = "go build -o cli-proxy-api ./cmd/server"
+
+[tasks."verify:compile"]
+description = "Compile the native-plugin server without retaining an artifact"
+env = { CGO_ENABLED = "1" }
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+output="$(mktemp "${TMPDIR:-/tmp}/cli-proxy-api.XXXXXX")"
+trap 'rm -f "$output"' EXIT
+go build -o "$output" ./cmd/server
+'''
+
+[tasks."verify:test"]
+description = "Run the full Go test suite"
+env = { CGO_ENABLED = "1" }
+run = "go test ./..."
+
+[tasks."verify:race"]
+description = "Run the full Go test suite with the race detector"
+env = { CGO_ENABLED = "1" }
+run = "go test -race ./..."
+
+[tasks."verify:purego"]
+description = "Test and compile the pure-Go native plugin loader"
+env = { CGO_ENABLED = "0" }
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+output="$(mktemp "${TMPDIR:-/tmp}/cli-proxy-api-purego.XXXXXX")"
+trap 'rm -f "$output"' EXIT
+go test -tags=plugin_purego ./...
+go build -tags=plugin_purego -o "$output" ./cmd/server
+'''
 
 [tasks."release:publish"]
 description = "Test and atomically push main with an annotated release tag for Actions"
