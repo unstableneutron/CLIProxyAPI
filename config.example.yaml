@@ -89,6 +89,14 @@ pprof:
 plugins:
   enabled: false
   dir: "plugins"
+  # Optional environment-backed provider accounts; no auth JSON is needed.
+  # Values remain in memory; only environment variable names are serialized.
+  # Missing/blank variables are skipped. Restart after changing injected secrets.
+  # Repeat entries with separate variable names for multiple accounts.
+  # api-keys:
+  #   - provider: commandcode
+  #     api-key-env: COMMANDCODE_API_KEY
+  #     label: personal
   # Additional plugin store registries. The built-in official registry is always included.
   # store-sources:
   #   - "https://example.com/cliproxy-plugins/registry.json"

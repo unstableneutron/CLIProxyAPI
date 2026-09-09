@@ -2,6 +2,7 @@ package synthesizer
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -56,8 +57,34 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	out = append(out, s.synthesizeOpenAICompat(ctx)...)
 	// Vertex-compat
 	out = append(out, s.synthesizeVertexCompat(ctx)...)
+	out = append(out, s.synthesizePluginKeys(ctx)...)
 
 	return out, nil
+}
+
+func (s *ConfigSynthesizer) synthesizePluginKeys(ctx *SynthesisContext) []*coreauth.Auth {
+	if !ctx.Config.Plugins.Enabled {
+		return nil
+	}
+	var out []*coreauth.Auth
+	for i, entry := range ctx.Config.Plugins.APIKeys {
+		provider := strings.ToLower(strings.TrimSpace(entry.Provider))
+		key := strings.TrimSpace(os.Getenv(strings.TrimSpace(entry.APIKeyEnv)))
+		if provider == "" || key == "" {
+			continue
+		}
+		base := strings.TrimSpace(entry.BaseURL)
+		id, token := ctx.IDGenerator.Next("plugin:apikey:"+provider, key, base)
+		out = append(out, &coreauth.Auth{
+			ID: id, Provider: provider, Label: strings.TrimSpace(entry.Label),
+			Status: coreauth.StatusActive, CreatedAt: ctx.Now, UpdatedAt: ctx.Now,
+			Attributes: map[string]string{
+				"api_key": key, "base_url": base,
+				"source": "config:plugin[" + token + "]", "config_index": strconv.Itoa(i),
+			},
+		})
+	}
+	return out
 }
 
 // synthesizeGeminiKeys creates Auth entries for Gemini API keys.

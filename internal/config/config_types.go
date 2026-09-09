@@ -24,6 +24,8 @@ type RequestScopedErrorRule struct {
 type PluginsConfig struct {
 	// Enabled toggles dynamic plugin loading.
 	Enabled bool `yaml:"enabled" json:"enabled"`
+	// APIKeys creates runtime-only native provider credentials from environment variables.
+	APIKeys []PluginAPIKey `yaml:"api-keys,omitempty" json:"api-keys,omitempty"`
 	// Dir is the plugin discovery directory.
 	Dir string `yaml:"dir" json:"dir"`
 	// StoreSources appends third-party plugin store registries to the built-in official source.
@@ -34,6 +36,15 @@ type PluginsConfig struct {
 	AuthRevision int64 `yaml:"auth-revision,omitempty" json:"auth-revision,omitempty"`
 	// Configs stores per-plugin instance configuration by plugin ID.
 	Configs map[string]PluginInstanceConfig `yaml:"configs" json:"configs"`
+}
+
+// PluginAPIKey identifies an environment-backed native provider account.
+// Only the environment variable name is part of configuration; its value is never serialized.
+type PluginAPIKey struct {
+	Provider  string `yaml:"provider" json:"provider"`
+	APIKeyEnv string `yaml:"api-key-env" json:"api-key-env"`
+	BaseURL   string `yaml:"base-url,omitempty" json:"base-url,omitempty"`
+	Label     string `yaml:"label,omitempty" json:"label,omitempty"`
 }
 
 // PluginInstanceConfig stores host-owned plugin settings and the original plugin YAML subtree.
