@@ -215,9 +215,17 @@ func (s *Server) refreshPluginManagementRoutes() {
 	s.pluginHost.RegisterManagementRoutes(context.Background(), s.registeredManagementRouteKeys())
 }
 
-// RefreshPluginManagementRoutes rebuilds plugin-owned Management API routes.
+func (s *Server) refreshPluginIngressRoutes() {
+	if s == nil || s.pluginHost == nil {
+		return
+	}
+	s.pluginHost.RegisterIngressRoutes(context.Background())
+}
+
+// RefreshPluginManagementRoutes rebuilds plugin-owned fallback routes after plugin changes.
 func (s *Server) RefreshPluginManagementRoutes() {
 	s.refreshPluginManagementRoutes()
+	s.refreshPluginIngressRoutes()
 }
 
 func (s *Server) registeredManagementRouteKeys() map[string]struct{} {
@@ -246,7 +254,7 @@ func (s *Server) pluginManagementNoRoute(c *gin.Context) {
 		return
 	}
 	if path != "/v0/management" && !strings.HasPrefix(path, "/v0/management/") {
-		c.AbortWithStatus(http.StatusNotFound)
+		s.pluginIngressNoRoute(c)
 		return
 	}
 	if s.pluginHost == nil || s.mgmt == nil {
@@ -265,6 +273,36 @@ func (s *Server) pluginManagementNoRoute(c *gin.Context) {
 		return
 	}
 	if s.pluginHost.ServeManagementHTTP(c.Writer, c.Request) {
+		c.Abort()
+		return
+	}
+	c.AbortWithStatus(http.StatusNotFound)
+}
+
+func (s *Server) pluginIngressNoRoute(c *gin.Context) {
+	if s == nil || s.pluginHost == nil || s.accessManager == nil || c == nil || c.Request == nil || !s.pluginHost.IngressEligible(c.Request) {
+		if c != nil {
+			c.AbortWithStatus(http.StatusNotFound)
+		}
+		return
+	}
+	result, authErr := s.accessManager.Authenticate(c.Request.Context(), c.Request)
+	if authErr != nil {
+		statusCode := authErr.HTTPStatusCode()
+		if statusCode >= http.StatusInternalServerError {
+			log.WithError(authErr).Error("plugin ingress authentication failed")
+		}
+		c.AbortWithStatusJSON(statusCode, gin.H{"error": authErr.Message})
+		return
+	}
+	if result != nil {
+		c.Set("userApiKey", result.Principal)
+		c.Set("accessProvider", result.Provider)
+		if len(result.Metadata) > 0 {
+			c.Set("accessMetadata", result.Metadata)
+		}
+	}
+	if s.pluginHost.ServeIngressHTTP(c.Writer, c.Request) {
 		c.Abort()
 		return
 	}

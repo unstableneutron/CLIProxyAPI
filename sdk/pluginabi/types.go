@@ -91,6 +91,8 @@ const (
 
 	MethodManagementRegister = "management.register"
 	MethodManagementHandle   = "management.handle"
+	MethodIngressRegister    = "ingress.register"
+	MethodIngressHandle      = "ingress.handle"
 
 	MethodHostHTTPDo             = "host.http.do"
 	MethodHostHTTPDoStream       = "host.http.do_stream"

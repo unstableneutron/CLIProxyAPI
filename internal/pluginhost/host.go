@@ -82,6 +82,7 @@ type Host struct {
 	commandLineHits        map[string]struct{}
 	managementRoutes       map[string]managementRouteRecord
 	resourceRoutes         map[string]resourceRouteRecord
+	ingressRoutes          []ingressRouteRecord
 	streams                *streamBridge
 	httpStreams            *hostHTTPStreamBridge
 	modelStreams           *modelStreamBridge
@@ -112,6 +113,7 @@ func New() *Host {
 		commandLineHits:        make(map[string]struct{}),
 		managementRoutes:       make(map[string]managementRouteRecord),
 		resourceRoutes:         make(map[string]resourceRouteRecord),
+		ingressRoutes:          nil,
 		streams:                newStreamBridge(),
 		httpStreams:            newHostHTTPStreamBridge(),
 		modelStreams:           newModelStreamBridge(),
@@ -1056,7 +1058,8 @@ func validPlugin(plugin pluginapi.Plugin) bool {
 		caps.ThinkingApplier != nil ||
 		caps.UsagePlugin != nil ||
 		caps.CommandLinePlugin != nil ||
-		caps.ManagementAPI != nil
+		caps.ManagementAPI != nil ||
+		caps.IngressProxy != nil
 }
 
 func typeName(v any) string {

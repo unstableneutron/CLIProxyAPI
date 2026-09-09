@@ -197,6 +197,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		s.mgmt.SetPluginHost(s.pluginHost)
 	}
 	s.refreshPluginManagementRoutes()
+	s.refreshPluginIngressRoutes()
 
 	// Count client sources from configuration and auth store.
 	authEntries := 0

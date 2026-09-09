@@ -187,7 +187,18 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	if resp.Capabilities.ManagementAPI {
 		plugin.Capabilities.ManagementAPI = adapter
 	}
+	if resp.Capabilities.IngressProxy {
+		plugin.Capabilities.IngressProxy = adapter
+	}
 	return plugin, nil
+}
+
+func (a *rpcPluginAdapter) RegisterIngress(ctx context.Context, req pluginapi.IngressRegistrationRequest) (pluginapi.IngressRegistrationResponse, error) {
+	return callPlugin[pluginapi.IngressRegistrationResponse](ctx, a.client, pluginabi.MethodIngressRegister, req)
+}
+
+func (a *rpcPluginAdapter) HandleIngress(ctx context.Context, req pluginapi.IngressRequest) (pluginapi.IngressResponse, error) {
+	return callPlugin[pluginapi.IngressResponse](ctx, a.client, pluginabi.MethodIngressHandle, req)
 }
 
 func callPlugin[T any](ctx context.Context, client pluginClient, method string, request any) (T, error) {

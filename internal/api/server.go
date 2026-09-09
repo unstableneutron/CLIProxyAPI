@@ -239,6 +239,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 		s.registerManagementRoutes()
 	}
 	s.refreshPluginManagementRoutes()
+	s.refreshPluginIngressRoutes()
 	engine.NoRoute(s.pluginManagementNoRoute)
 
 	if optionState.keepAliveEnabled {

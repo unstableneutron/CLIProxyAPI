@@ -122,6 +122,8 @@ type Capabilities struct {
 	CommandLinePlugin CommandLinePlugin
 	// ManagementAPI declares plugin-owned diagnostic Management API and resource routes.
 	ManagementAPI ManagementAPI
+	// IngressProxy declares bounded authenticated HTTP reverse-proxy routes.
+	IngressProxy IngressProxy
 }
 
 // ExecutorModelScope declares which model-registration paths a plugin executor supports.
@@ -1274,6 +1276,88 @@ type CommandLineExecutionResponse struct {
 	Auths []AuthData
 	// ExitCode is used as the process exit code when non-zero.
 	ExitCode int
+}
+
+// IngressProxy declares and maps authenticated HTTP reverse-proxy requests.
+// The host retains ownership of authentication, credentials, transport, and body streaming.
+type IngressProxy interface {
+	RegisterIngress(context.Context, IngressRegistrationRequest) (IngressRegistrationResponse, error)
+	HandleIngress(context.Context, IngressRequest) (IngressResponse, error)
+}
+
+// IngressRegistrationRequest carries host context for ingress registration.
+type IngressRegistrationRequest struct {
+	Plugin Metadata `json:"plugin"`
+}
+
+// IngressRegistrationResponse lists bounded route prefixes and configured upstream origins.
+type IngressRegistrationResponse struct {
+	Routes []IngressRoute `json:"routes"`
+}
+
+// IngressRoute declares an authenticated NoRoute prefix owned by a plugin.
+type IngressRoute struct {
+	Methods         []string `json:"methods"`
+	PathPrefix      string   `json:"path_prefix"`
+	RequiredHeaders []string `json:"required_headers,omitempty"`
+	UpstreamOrigins []string `json:"upstream_origins"`
+}
+
+// IngressRequest contains request metadata only. The host never buffers or exposes the body.
+// Sensitive header values are omitted; PresentHeaders still reports their presence.
+type IngressRequest struct {
+	Method         string      `json:"method"`
+	Path           string      `json:"path"`
+	EscapedPath    string      `json:"escaped_path"`
+	RawQuery       string      `json:"raw_query,omitempty"`
+	Headers        http.Header `json:"headers,omitempty"`
+	PresentHeaders []string    `json:"present_headers,omitempty"`
+}
+
+// IngressResponse reports whether a request is eligible and supplies a data-only proxy plan.
+type IngressResponse struct {
+	Handled bool              `json:"handled"`
+	Plan    *IngressProxyPlan `json:"plan,omitempty"`
+}
+
+// IngressProxyPlan is validated and executed by the host against the registered route policy.
+type IngressProxyPlan struct {
+	UpstreamURL string                `json:"upstream_url"`
+	Credential  *IngressCredentialUse `json:"credential,omitempty"`
+	// Transport is one of the fixed host policies "standard" or "utls".
+	Transport string `json:"transport,omitempty"`
+}
+
+// IngressCredentialUse selects a shared-pool credential opaquely and applies one secret header.
+// It does not impose per-principal account restrictions; the active host pool is shared.
+type IngressCredentialUse struct {
+	Selector          CredentialSelector  `json:"selector"`
+	Injection         CredentialInjection `json:"injection"`
+	FallbackToInbound bool                `json:"fallback_to_inbound,omitempty"`
+}
+
+// CredentialSelector compares the first non-empty ordered identity source on each active candidate.
+type CredentialSelector struct {
+	Provider        string                  `json:"provider"`
+	IdentitySources []CredentialValueSource `json:"identity_sources"`
+	Equals          string                  `json:"equals"`
+	CaseInsensitive bool                    `json:"case_insensitive,omitempty"`
+	// Order currently accepts only "oldest".
+	Order string `json:"order"`
+}
+
+// CredentialInjection applies the first non-empty ordered secret source to Header.
+type CredentialInjection struct {
+	Header       string                  `json:"header"`
+	Prefix       string                  `json:"prefix,omitempty"`
+	ValueSources []CredentialValueSource `json:"value_sources"`
+}
+
+// CredentialValueSource names a strictly validated credential field or JWT claim.
+type CredentialValueSource struct {
+	Kind  string `json:"kind"`
+	Path  string `json:"path"`
+	Claim string `json:"claim,omitempty"`
 }
 
 // ManagementAPI declares plugin-owned Management API and resource routes.

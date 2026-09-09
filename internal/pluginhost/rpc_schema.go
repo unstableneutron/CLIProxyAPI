@@ -44,6 +44,7 @@ type rpcCapabilities struct {
 	UsagePlugin                   bool                         `json:"usage_plugin"`
 	CommandLinePlugin             bool                         `json:"command_line_plugin"`
 	ManagementAPI                 bool                         `json:"management_api"`
+	IngressProxy                  bool                         `json:"ingress_proxy"`
 }
 
 type rpcIdentifierResponse struct {
@@ -161,6 +162,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		UsagePlugin:                   caps.UsagePlugin != nil,
 		CommandLinePlugin:             caps.CommandLinePlugin != nil,
 		ManagementAPI:                 caps.ManagementAPI != nil,
+		IngressProxy:                  caps.IngressProxy != nil,
 	}
 }
 
