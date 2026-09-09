@@ -849,6 +849,7 @@ func TestHostApplyConfigRollsBackQuiescedPluginWhenReplacementFails(t *testing.T
 		"old." + pluginabi.MethodPluginRegister,
 		"old." + pluginabi.MethodPluginQuiesce,
 		"replacement." + pluginabi.MethodPluginRegister,
+		"replacement." + pluginabi.MethodPluginQuiesce,
 		"replacement.shutdown",
 		"old." + pluginabi.MethodPluginReconfigure,
 	}; !slices.Equal(got, want) {
@@ -1131,6 +1132,7 @@ func TestHostApplyConfigRollsBackQuiescedPluginWhenContextCanceled(t *testing.T)
 		"old." + pluginabi.MethodPluginRegister,
 		"old." + pluginabi.MethodPluginQuiesce,
 		"replacement." + pluginabi.MethodPluginRegister,
+		"replacement." + pluginabi.MethodPluginQuiesce,
 		"replacement.shutdown",
 		"old." + pluginabi.MethodPluginReconfigure,
 	}; !slices.Equal(got, want) {
@@ -1184,6 +1186,7 @@ func TestHostApplyConfigShutsDownSuccessfulReplacementBeforeCanceledRollback(t *
 		"old." + pluginabi.MethodPluginRegister,
 		"old." + pluginabi.MethodPluginQuiesce,
 		"replacement." + pluginabi.MethodPluginRegister,
+		"replacement." + pluginabi.MethodPluginQuiesce,
 		"replacement.shutdown",
 		"old." + pluginabi.MethodPluginReconfigure,
 	}; !slices.Equal(got, want) {
