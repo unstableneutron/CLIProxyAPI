@@ -3112,6 +3112,26 @@ func TestExecutorAdapterSelectsCustomOutputWithHostResponseTranslator(t *testing
 	}
 }
 
+func TestExecutorAdapterTranslatesBareAndFramedOpenAIToClaude(t *testing.T) {
+	chunk := []byte(`{"id":"native-stream","object":"chat.completion.chunk","model":"native-model","choices":[{"index":0,"delta":{"role":"assistant","content":"native-ok"},"finish_reason":null}]}`)
+	for _, prefix := range []string{"", "data: "} {
+		t.Run(fmt.Sprintf("prefix=%q", prefix), func(t *testing.T) {
+			prepared := preparedExecutorCall{
+				req:             coreexecutor.Request{Model: "native-model", Payload: []byte(`{"stream":true}`)},
+				opts:            coreexecutor.Options{OriginalRequest: []byte(`{"model":"native-model","stream":true,"messages":[]}`)},
+				requestedFormat: sdktranslator.FormatClaude,
+				outputFormat:    sdktranslator.FormatOpenAI,
+			}
+			var param any
+			frames := (&executorAdapter{}).translateExecutorStreamPayload(context.Background(), prepared, append([]byte(prefix), chunk...), &param)
+			joined := bytes.Join(frames, nil)
+			if !bytes.Contains(joined, []byte(`"text":"native-ok"`)) || !bytes.Contains(joined, []byte("content_block_delta")) {
+				t.Fatalf("missing translated Claude content: %s", joined)
+			}
+		})
+	}
+}
+
 func TestExecutorAdapterConsumesTranslatedStreamChunksWithoutOutput(t *testing.T) {
 	adapter := &executorAdapter{}
 	request := []byte(`{"model":"qmodel_latest","stream":true,"tool_choice":"auto","parallel_tool_calls":true}`)

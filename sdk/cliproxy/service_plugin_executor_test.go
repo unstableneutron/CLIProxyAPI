@@ -29,10 +29,10 @@ func TestHasNativeOpenAICompatExecutorConfig(t *testing.T) {
 			want:        true,
 		},
 		{
-			name:        "inline base url",
+			name:        "plugin endpoint does not imply OpenAI protocol",
 			auth:        &coreauth.Auth{Provider: "plugin-provider", Attributes: map[string]string{"base_url": "https://compat.example.com/v1"}},
 			providerKey: "plugin-provider",
-			want:        true,
+			want:        false,
 		},
 		{
 			name:        "compat metadata",

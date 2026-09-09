@@ -89,9 +89,8 @@ func (s *Service) hasNativeOpenAICompatExecutorConfig(a *coreauth.Auth, provider
 	}
 	providerKey = strings.ToLower(strings.TrimSpace(providerKey))
 	if a.Attributes != nil {
-		if strings.TrimSpace(a.Attributes["base_url"]) != "" {
-			return true
-		}
+		// A plugin may own a non-OpenAI protocol at its configured base URL.
+		// Only explicit compatibility metadata/configuration overrides its executor.
 		if strings.TrimSpace(a.Attributes["compat_name"]) != "" {
 			return true
 		}

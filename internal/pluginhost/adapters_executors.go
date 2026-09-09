@@ -599,6 +599,11 @@ func (a *executorAdapter) translateExecutorStreamPayload(ctx context.Context, pr
 	if len(originalRequest) == 0 {
 		originalRequest = prepared.req.Payload
 	}
+	// Native OpenAI executors may emit JSON records without SSE framing.
+	// Built-in stream translators consume data frames, not bare records.
+	if prepared.outputFormat == sdktranslator.FormatOpenAI && json.Valid(bytes.TrimSpace(payload)) {
+		payload = append([]byte("data: "), bytes.TrimSpace(payload)...)
+	}
 	frames := sdktranslator.TranslateStream(ctx, prepared.outputFormat, prepared.requestedFormat, prepared.req.Model, originalRequest, prepared.req.Payload, payload, param)
 	if executorStreamTranslationFellBack(prepared, payload, frames) {
 		return nil
