@@ -83,3 +83,22 @@ Unix CGO, like the Windows and purego loaders, retains native images until proce
 exit. Go c-shared runtime threads cannot safely be stopped with `dlclose`, even
 after provider work drains. Replacing a native image requires process restart;
 logical unload is not a promise to reclaim its executable mappings.
+
+## Build hosts for plugin smoke qualification
+
+Install mise and a C compiler, then run `mise install` to use the pinned patched
+Go toolchain. Build separate executables so the plugin repository can exercise
+both loaders against the same exact host source commit:
+
+```bash
+OUTPUT=/absolute/path/cpa-cgo mise run build
+OUTPUT=/absolute/path/cpa-purego mise run build:purego
+mise run verify:compile
+mise run verify:test
+mise run verify:race
+mise run verify:purego
+```
+
+The plugin repository's `mise run smoke` consumes these paths as `HOST_CGO` and
+`HOST_PUREGO`. Host verification does not publish an application release or
+deployment. Plugin artifacts require their separate versioned publication gate.

@@ -7,7 +7,12 @@ go = "1.26.6"
 [tasks.build]
 description = "Build the native-plugin server binary"
 env = { CGO_ENABLED = "1" }
-run = "go build -o cli-proxy-api ./cmd/server"
+run = 'go build -o "${OUTPUT:-cli-proxy-api}" ./cmd/server'
+
+[tasks."build:purego"]
+description = "Build a CGO-disabled purego host for native plugin smoke tests"
+env = { CGO_ENABLED = "0" }
+run = 'go build -tags=plugin_purego -o "${OUTPUT:-cli-proxy-api}" ./cmd/server'
 
 [tasks."verify:compile"]
 description = "Compile the native-plugin server without retaining an artifact"
