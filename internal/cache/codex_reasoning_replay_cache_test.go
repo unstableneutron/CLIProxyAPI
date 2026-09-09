@@ -364,3 +364,51 @@ func TestCodexReasoningReplayCacheBatchEvictsWhenFull(t *testing.T) {
 		t.Fatalf("cache entries = %d, want batch eviction below max %d", gotLen, CodexReasoningReplayCacheMaxEntries)
 	}
 }
+
+func TestCodexReasoningReplayInvalidationRejectsLateCompletion(t *testing.T) {
+	for _, homeMode := range []bool{false, true} {
+		name := "local"
+		if homeMode {
+			name = "home"
+		}
+		t.Run(name, func(t *testing.T) {
+			ClearCodexReasoningReplayCache()
+			t.Cleanup(ClearCodexReasoningReplayCache)
+			useFakeCodexReasoningReplayKVClient(t, newFakeCodexReasoningReplayKVClient(), homeMode, nil)
+
+			_, found, generation, errGet := GetCodexReasoningReplayItemsAtGenerationRequired(context.Background(), "gpt-5.4", "session-stale")
+			if errGet != nil || found || generation == "" {
+				t.Fatalf("initial snapshot = found %v generation %q err %v", found, generation, errGet)
+			}
+
+			releaseAppend := make(chan struct{})
+			appendResult := make(chan bool, 1)
+			go func() {
+				<-releaseAppend
+				appendResult <- AppendCodexReasoningReplayItemsAtGenerationBestEffort(
+					context.Background(), "gpt-5.4", "session-stale", generation,
+					[][]byte{
+						[]byte(`{"type":"` + CodexReasoningReplayTurnType + `","id":"stale-turn"}`),
+						validCodexReasoningReplayItemForTest(71),
+					},
+				)
+			}()
+
+			if errInvalidate := InvalidateCodexReasoningReplayItemsRequired(context.Background(), "gpt-5.4", "session-stale"); errInvalidate != nil {
+				t.Fatalf("invalidate replay: %v", errInvalidate)
+			}
+			close(releaseAppend)
+			if appended := <-appendResult; appended {
+				t.Fatal("stale completion appended after invalidation")
+			}
+
+			items, found, nextGeneration, errGet := GetCodexReasoningReplayItemsAtGenerationRequired(context.Background(), "gpt-5.4", "session-stale")
+			if errGet != nil || found || len(items) != 0 {
+				t.Fatalf("invalidated state = items %q found %v err %v", items, found, errGet)
+			}
+			if nextGeneration == "" || nextGeneration == generation {
+				t.Fatalf("generation = %q, want non-empty value distinct from %q", nextGeneration, generation)
+			}
+		})
+	}
+}

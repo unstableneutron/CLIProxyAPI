@@ -130,7 +130,9 @@ func TestCodexExecutorReasoningReplayCacheSharesSameSessionAcrossClientKeys(t *t
 	cacheCodexReasoningReplayFromCompleted(firstScope, []byte(`{"response":{"output":[{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+encryptedContent+`"}]}}`))
 
 	secondBody, secondScope := applyCodexReasoningReplayCache(codexReplaySessionOnlyContext("client-key-b"), from, req, opts, body)
-	if secondScope != firstScope {
+	if secondScope.modelName != firstScope.modelName ||
+		secondScope.sessionKey != firstScope.sessionKey ||
+		secondScope.requestFingerprint != firstScope.requestFingerprint {
 		t.Fatalf("replay scope should ignore client API key for the same session: first=%#v second=%#v", firstScope, secondScope)
 	}
 	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got != "reasoning" {
@@ -231,7 +233,7 @@ func TestCodexExecutorReasoningReplaySessionKeyCanonicalizesWindowHeaderWithPayl
 	}
 }
 
-func TestCodexExecutorReasoningReplayCacheSharesSameSessionAcrossCodexAuths(t *testing.T) {
+func TestCodexExecutorReasoningReplayCacheIsolatesSameSessionAcrossCodexAuths(t *testing.T) {
 	internalcache.ClearCodexReasoningReplayCache()
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 
@@ -290,11 +292,11 @@ func TestCodexExecutorReasoningReplayCacheSharesSameSessionAcrossCodexAuths(t *t
 		t.Fatalf("upstream request count = %d, want 2", len(bodies))
 	}
 	secondBody := bodies[1]
-	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got != "reasoning" {
-		t.Fatalf("input.0.type = %q, want same-session replay across auths; body=%s", got, string(secondBody))
+	if got := gjson.GetBytes(secondBody, "input.0.type").String(); got != "message" {
+		t.Fatalf("input.0.type = %q, want account-B user message; body=%s", got, string(secondBody))
 	}
-	if got := gjson.GetBytes(secondBody, "input.0.encrypted_content").String(); got != encryptedContent {
-		t.Fatalf("injected encrypted_content = %q, want cached value", got)
+	if got := gjson.GetBytes(secondBody, `input.#(encrypted_content=="`+encryptedContent+`")`).Array(); len(got) != 0 {
+		t.Fatalf("account-B request consumed account-A encrypted reasoning; body=%s", string(secondBody))
 	}
 }
 
@@ -444,7 +446,7 @@ func TestCodexExecutorReasoningReplayCacheInsertsReasoningBeforeAssistantOutputI
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 
 	cachedEncryptedContent := validCodexReasoningEncryptedContentForTestSeed(7)
-	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", "claude:session-history:agent:main", []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
+	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", "auth\x00auth-replay-history\x00claude:session-history:agent:main", []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
 
 	var gotBody []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -572,7 +574,8 @@ func TestCodexExecutorReasoningReplayCacheClearsOnNonStreamResponseFailedInvalid
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 
 	cachedEncryptedContent := validCodexReasoningEncryptedContentForTestSeed(9)
-	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", "claude:session-invalid-nonstream:agent:main", []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
+	replayKey := "auth\x00auth-replay-invalid-nonstream\x00claude:session-invalid-nonstream:agent:main"
+	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", replayKey, []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
@@ -598,7 +601,7 @@ func TestCodexExecutorReasoningReplayCacheClearsOnNonStreamResponseFailedInvalid
 	if err == nil {
 		t.Fatal("expected invalid signature error")
 	}
-	if _, ok := internalcache.GetCodexReasoningReplayItem("gpt-5.4", "claude:session-invalid-nonstream:agent:main"); ok {
+	if _, ok := internalcache.GetCodexReasoningReplayItem("gpt-5.4", replayKey); ok {
 		t.Fatal("invalid signature response.failed should clear cached replay item")
 	}
 }
@@ -608,7 +611,8 @@ func TestCodexExecutorReasoningReplayCacheClearsOnStreamResponseFailedInvalidSig
 	t.Cleanup(internalcache.ClearCodexReasoningReplayCache)
 
 	cachedEncryptedContent := validCodexReasoningEncryptedContentForTestSeed(10)
-	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", "claude:session-invalid-stream:agent:main", []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
+	replayKey := "auth\x00auth-replay-invalid-stream\x00claude:session-invalid-stream:agent:main"
+	internalcache.CacheCodexReasoningReplayItem("gpt-5.4", replayKey, []byte(`{"type":"reasoning","summary":[],"content":null,"encrypted_content":"`+cachedEncryptedContent+`"}`))
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
@@ -644,7 +648,7 @@ func TestCodexExecutorReasoningReplayCacheClearsOnStreamResponseFailedInvalidSig
 	if !gotChunkErr {
 		t.Fatal("expected stream chunk error for invalid signature response.failed")
 	}
-	if _, ok := internalcache.GetCodexReasoningReplayItem("gpt-5.4", "claude:session-invalid-stream:agent:main"); ok {
+	if _, ok := internalcache.GetCodexReasoningReplayItem("gpt-5.4", replayKey); ok {
 		t.Fatal("invalid signature response.failed should clear cached replay item")
 	}
 }

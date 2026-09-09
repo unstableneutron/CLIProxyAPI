@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
@@ -26,6 +27,7 @@ type codexReasoningReplayScope struct {
 	modelName          string
 	sessionKey         string
 	requestFingerprint string
+	generation         string
 }
 
 func (s codexReasoningReplayScope) valid() bool {
@@ -39,10 +41,20 @@ func applyCodexReasoningReplayCache(ctx context.Context, from sdktranslator.Form
 
 func applyCodexReasoningReplayCacheRequired(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) ([]byte, codexReasoningReplayScope, error) {
 	scope := codexReasoningReplayScopeFromRequest(ctx, from, req, opts, body)
+	return applyCodexReasoningReplayScopeRequired(ctx, scope, body)
+}
+
+func applyCodexReasoningReplayCacheForAuthRequired(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) ([]byte, codexReasoningReplayScope, error) {
+	scope := codexReasoningReplayScopeForAuth(codexReasoningReplayScopeFromRequest(ctx, from, req, opts, body), auth)
+	return applyCodexReasoningReplayScopeRequired(ctx, scope, body)
+}
+
+func applyCodexReasoningReplayScopeRequired(ctx context.Context, scope codexReasoningReplayScope, body []byte) ([]byte, codexReasoningReplayScope, error) {
 	if !scope.valid() {
 		return body, scope, nil
 	}
-	items, ok, errReplay := internalcache.GetCodexReasoningReplayItemsRequired(ctx, scope.modelName, scope.sessionKey)
+	items, ok, generation, errReplay := internalcache.GetCodexReasoningReplayItemsAtGenerationRequired(ctx, scope.modelName, scope.sessionKey)
+	scope.generation = generation
 	if errReplay != nil || !ok {
 		return body, scope, errReplay
 	}
@@ -51,6 +63,14 @@ func applyCodexReasoningReplayCacheRequired(ctx context.Context, from sdktransla
 		return body, scope, nil
 	}
 	return updated, scope, nil
+}
+
+func codexReasoningReplayScopeForAuth(scope codexReasoningReplayScope, auth *cliproxyauth.Auth) codexReasoningReplayScope {
+	if !scope.valid() || auth == nil || strings.TrimSpace(auth.ID) == "" {
+		return codexReasoningReplayScope{}
+	}
+	scope.sessionKey = strings.Join([]string{"auth", strings.TrimSpace(auth.ID), scope.sessionKey}, "\x00")
+	return scope
 }
 
 func codexReasoningReplayScopeFromRequest(ctx context.Context, from sdktranslator.Format, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, body []byte) codexReasoningReplayScope {
@@ -758,6 +778,10 @@ func shortenCodexReplayCallIDIfNeeded(id string) string {
 }
 
 func cacheCodexReasoningReplayFromCompleted(scope codexReasoningReplayScope, completedData []byte) {
+	cacheCodexReasoningReplayFromCompletedWithContext(context.Background(), scope, completedData)
+}
+
+func cacheCodexReasoningReplayFromCompletedWithContext(ctx context.Context, scope codexReasoningReplayScope, completedData []byte) {
 	if !scope.valid() {
 		return
 	}
@@ -811,7 +835,11 @@ func cacheCodexReasoningReplayFromCompleted(scope codexReasoningReplayScope, com
 	items := make([][]byte, 0, len(replayItems)+1)
 	items = append(items, marker)
 	items = append(items, replayItems...)
-	internalcache.AppendCodexReasoningReplayItemsBestEffort(context.Background(), scope.modelName, scope.sessionKey, items)
+	if scope.generation == "" {
+		internalcache.AppendCodexReasoningReplayItemsBestEffort(ctx, scope.modelName, scope.sessionKey, items)
+		return
+	}
+	internalcache.AppendCodexReasoningReplayItemsAtGenerationBestEffort(ctx, scope.modelName, scope.sessionKey, scope.generation, items)
 }
 
 func clearCodexReasoningReplayOnInvalidSignature(ctx context.Context, scope codexReasoningReplayScope, statusCode int, body []byte) error {
@@ -820,7 +848,7 @@ func clearCodexReasoningReplayOnInvalidSignature(ctx context.Context, scope code
 	}
 	code, _, ok := codexStatusErrorClassification(statusCode, body)
 	if ok && code == "thinking_signature_invalid" {
-		return internalcache.DeleteCodexReasoningReplayItemRequired(ctx, scope.modelName, scope.sessionKey)
+		return internalcache.InvalidateCodexReasoningReplayItemsRequired(ctx, scope.modelName, scope.sessionKey)
 	}
 	return nil
 }

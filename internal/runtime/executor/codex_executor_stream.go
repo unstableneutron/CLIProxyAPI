@@ -74,7 +74,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body = normalizeCodexParallelToolCalls(body, opts.Headers)
 	body = helps.NormalizeCodexToolSchemas(body)
 	body, optimizeMultiAgentV2 := helps.OptimizeCodexMultiAgentV2RequestForAuth(ctx, opts.Headers, body, e.cfg, auth, baseModel)
-	body, replayScope, errReplay := applyCodexReasoningReplayCacheRequired(ctx, from, req, opts, body)
+	body, replayScope, errReplay := applyCodexReasoningReplayCacheForAuthRequired(ctx, auth, from, req, opts, body)
 	if errReplay != nil {
 		return nil, errReplay
 	}
@@ -223,7 +223,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					publishCodexImageToolUsage(ctx, reporter, body, data)
 					data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
 					if eventType == "response.completed" || eventType == "response.done" {
-						cacheCodexReasoningReplayFromCompleted(replayScope, data)
+						cacheCodexReasoningReplayFromCompletedWithContext(ctx, replayScope, data)
 					}
 					translatedLine = append([]byte("data: "), data...)
 				}
@@ -361,7 +361,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					publishCodexImageToolUsage(ctx, reporter, body, data)
 					data = patchCodexCompletedOutput(data, outputItemsByIndex, outputItemsFallback)
 					if eventType == "response.completed" || eventType == "response.done" {
-						cacheCodexReasoningReplayFromCompleted(replayScope, data)
+						cacheCodexReasoningReplayFromCompletedWithContext(ctx, replayScope, data)
 					}
 					translatedLine = append([]byte("data: "), data...)
 				}
