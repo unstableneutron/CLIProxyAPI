@@ -130,6 +130,30 @@ plugins:
 	if missingRecorder.Code != http.StatusNotFound || upstreamCalls.Load() != 2 {
 		t.Fatalf("ineligible response=%d upstream calls=%d", missingRecorder.Code, upstreamCalls.Load())
 	}
+
+	noAuthConfig := *cfg
+	noAuthConfig.SDKConfig.APIKeys = nil
+	for _, tc := range []struct {
+		name      string
+		providers []sdkaccess.Provider
+	}{
+		{name: "empty access manager"},
+		{name: "nil result provider", providers: []sdkaccess.Provider{nilResultAccessProvider{}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accessManager := sdkaccess.NewManager()
+			unauthenticatedServer := NewServer(&noAuthConfig, authManager, accessManager, filepath.Join(t.TempDir(), "config.yaml"), WithPluginHost(host))
+			accessManager.SetProviders(tc.providers)
+			unauthenticated := httptest.NewRequest(http.MethodGet, "/backend-api/models", nil)
+			unauthenticated.Header.Set("Authorization", "Bearer caller-value")
+			unauthenticated.Header.Set("ChatGPT-Account-ID", "acct-123")
+			unauthenticatedRecorder := httptest.NewRecorder()
+			unauthenticatedServer.engine.ServeHTTP(unauthenticatedRecorder, unauthenticated)
+			if unauthenticatedRecorder.Code != http.StatusUnauthorized || upstreamCalls.Load() != 2 {
+				t.Fatalf("response=%d upstream calls=%d, want 401 and no dispatch", unauthenticatedRecorder.Code, upstreamCalls.Load())
+			}
+		})
+	}
 }
 
 func copyFile(t *testing.T, target, source string) {

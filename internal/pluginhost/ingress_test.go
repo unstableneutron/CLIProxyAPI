@@ -84,7 +84,7 @@ func TestIngressProxyPreservesRequestAndResponse(t *testing.T) {
 			if bodyReads.Load() != 0 {
 				t.Fatal("request body was read before the plugin returned its plan")
 			}
-			if req.Headers.Get("Authorization") != "" || !containsString(req.PresentHeaders, "Authorization") {
+			if req.Headers.Get("Authorization") != "" || req.Headers.Get("X-Api-Key") != "" || req.Headers.Get("X-Goog-Api-Key") != "" || !containsString(req.PresentHeaders, "Authorization") || !containsString(req.PresentHeaders, "X-Api-Key") || !containsString(req.PresentHeaders, "X-Goog-Api-Key") {
 				t.Fatalf("sensitive header was not presence-only: %#v %#v", req.Headers, req.PresentHeaders)
 			}
 			return pluginapi.IngressResponse{Handled: true, Plan: &pluginapi.IngressProxyPlan{
@@ -99,6 +99,8 @@ func TestIngressProxyPreservesRequestAndResponse(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer inbound-secret")
 	req.Header.Set("ChatGPT-Account-ID", "acct")
 	req.Header.Set("Proxy-Authorization", "proxy-secret")
+	req.Header.Set("X-Api-Key", "anthropic-frontend-secret")
+	req.Header.Set("X-Goog-Api-Key", "google-frontend-secret")
 	recorder := httptest.NewRecorder()
 
 	if !host.IngressEligible(req) || !host.ServeIngressHTTP(recorder, req) {
@@ -259,6 +261,31 @@ func TestIngressDownstreamDisconnectCancelsUpstream(t *testing.T) {
 	case <-canceled:
 	case <-time.After(2 * time.Second):
 		t.Fatal("upstream was not canceled after downstream disconnect")
+	}
+}
+
+func TestIngressPartialResponseDoesNotAppendErrorJSON(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "partial")
+	}))
+	defer upstream.Close()
+	host := newIngressTestHost(testIngressProxy{
+		register: func(context.Context, pluginapi.IngressRegistrationRequest) (pluginapi.IngressRegistrationResponse, error) {
+			return ingressTestRoute(upstream.URL), nil
+		},
+		handle: func(_ context.Context, req pluginapi.IngressRequest) (pluginapi.IngressResponse, error) {
+			return pluginapi.IngressResponse{Handled: true, Plan: &pluginapi.IngressProxyPlan{UpstreamURL: upstream.URL + req.Path, Transport: "standard"}}, nil
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/backend-api/partial", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("ChatGPT-Account-ID", "acct")
+	recorder := httptest.NewRecorder()
+	host.ServeIngressHTTP(recorder, req)
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "partial" {
+		t.Fatalf("partial response = %d %q, want 200 partial", recorder.Code, recorder.Body.String())
 	}
 }
 

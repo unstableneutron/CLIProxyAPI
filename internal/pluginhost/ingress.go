@@ -253,9 +253,10 @@ func (h *Host) ServeIngressHTTP(w http.ResponseWriter, r *http.Request) bool {
 		writeIngressError(w, http.StatusBadGateway, "invalid ingress proxy plan")
 		return true
 	}
-	if errProxy := h.executeIngressPlan(w, r, route, *resp.Plan); errProxy != nil {
+	trackedWriter := &ingressResponseWriter{ResponseWriter: w}
+	if errProxy := h.executeIngressPlan(trackedWriter, r, route, *resp.Plan); errProxy != nil {
 		log.WithError(errProxy).WithFields(log.Fields{"plugin_id": route.pluginID, "method": r.Method, "path": r.URL.Path}).Warn("pluginhost: ingress proxy failed")
-		if !responseStarted(w) {
+		if !trackedWriter.committed {
 			writeIngressError(w, http.StatusBadGateway, "upstream request failed")
 		}
 	}
@@ -514,7 +515,7 @@ func validJSONPointer(pointer string) bool {
 
 func sanitizedIngressHeaders(headers http.Header) http.Header {
 	out := cloneHeader(headers)
-	for _, name := range []string{"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie"} {
+	for _, name := range []string{"Authorization", "Proxy-Authorization", "Cookie", "Set-Cookie", "X-Api-Key", "X-Goog-Api-Key"} {
 		out.Del(name)
 	}
 	return out
@@ -576,11 +577,25 @@ func copyIngressBody(dst http.ResponseWriter, src io.Reader) error {
 	}
 }
 
-type responseState interface{ Written() bool }
+type ingressResponseWriter struct {
+	http.ResponseWriter
+	committed bool
+}
 
-func responseStarted(w http.ResponseWriter) bool {
-	state, ok := w.(responseState)
-	return ok && state.Written()
+func (w *ingressResponseWriter) WriteHeader(statusCode int) {
+	w.committed = true
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *ingressResponseWriter) Write(payload []byte) (int, error) {
+	w.committed = true
+	return w.ResponseWriter.Write(payload)
+}
+
+func (w *ingressResponseWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 func writeIngressError(w http.ResponseWriter, status int, message string) {

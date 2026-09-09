@@ -286,6 +286,17 @@ func (s *Server) pluginIngressNoRoute(c *gin.Context) {
 		}
 		return
 	}
+	if !s.authenticatePluginIngress(c) {
+		return
+	}
+	if s.pluginHost.ServeIngressHTTP(c.Writer, c.Request) {
+		c.Abort()
+		return
+	}
+	c.AbortWithStatus(http.StatusNotFound)
+}
+
+func (s *Server) authenticatePluginIngress(c *gin.Context) bool {
 	result, authErr := s.accessManager.Authenticate(c.Request.Context(), c.Request)
 	if authErr != nil {
 		statusCode := authErr.HTTPStatusCode()
@@ -293,20 +304,18 @@ func (s *Server) pluginIngressNoRoute(c *gin.Context) {
 			log.WithError(authErr).Error("plugin ingress authentication failed")
 		}
 		c.AbortWithStatusJSON(statusCode, gin.H{"error": authErr.Message})
-		return
+		return false
 	}
-	if result != nil {
-		c.Set("userApiKey", result.Principal)
-		c.Set("accessProvider", result.Provider)
-		if len(result.Metadata) > 0 {
-			c.Set("accessMetadata", result.Metadata)
-		}
+	if result == nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Missing API key"})
+		return false
 	}
-	if s.pluginHost.ServeIngressHTTP(c.Writer, c.Request) {
-		c.Abort()
-		return
+	c.Set("userApiKey", result.Principal)
+	c.Set("accessProvider", result.Provider)
+	if len(result.Metadata) > 0 {
+		c.Set("accessMetadata", result.Metadata)
 	}
-	c.AbortWithStatus(http.StatusNotFound)
+	return true
 }
 
 func (s *Server) pluginResourceNoRoute(c *gin.Context) {
