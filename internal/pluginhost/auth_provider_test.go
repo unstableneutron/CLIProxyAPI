@@ -184,6 +184,9 @@ func TestStartLoginPassesProviderBaseURLHostAndHTTPClient(t *testing.T) {
 						if req.HTTPClient == nil {
 							t.Fatal("StartLogin HTTPClient = nil, want host HTTP bridge")
 						}
+						if req.Metadata != nil {
+							t.Fatalf("StartLogin metadata = %#v, want nil for omitted metadata", req.Metadata)
+						}
 						return pluginapi.AuthLoginStartResponse{
 							Provider:  req.Provider,
 							URL:       "http://provider/login",
@@ -212,6 +215,30 @@ func TestStartLoginPassesProviderBaseURLHostAndHTTPClient(t *testing.T) {
 	}
 	if resp.Provider != "plugin-provider" || resp.URL != "http://provider/login" || resp.State != "state-1" || !resp.ExpiresAt.Equal(expiresAt) {
 		t.Fatalf("StartLogin() response = %#v, want plugin response", resp)
+	}
+}
+
+func TestStartLoginPassesClonedMetadata(t *testing.T) {
+	metadata := map[string]any{"login_method": "idc-authcode", "start_url": "https://example.awsapps.com/start", "region": "eu-west-1"}
+	host := newHostWithRecords(capabilityRecord{
+		id: "auth-plugin",
+		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{AuthProvider: fakeAuthProvider{
+			identifier: "plugin-provider",
+			startLogin: func(_ context.Context, req pluginapi.AuthLoginStartRequest) (pluginapi.AuthLoginStartResponse, error) {
+				if !reflect.DeepEqual(req.Metadata, metadata) {
+					t.Fatalf("StartLogin metadata = %#v, want %#v", req.Metadata, metadata)
+				}
+				req.Metadata["login_method"] = "changed"
+				return pluginapi.AuthLoginStartResponse{}, nil
+			},
+		}}},
+	})
+
+	if _, handled, errStart := host.StartLogin(context.Background(), "plugin-provider", "", metadata); errStart != nil || !handled {
+		t.Fatalf("StartLogin() handled=%t error=%v", handled, errStart)
+	}
+	if metadata["login_method"] != "idc-authcode" || metadata["region"] != "eu-west-1" {
+		t.Fatalf("caller metadata was mutated: %#v", metadata)
 	}
 }
 

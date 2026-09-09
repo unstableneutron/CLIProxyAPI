@@ -190,7 +190,7 @@ func (h *Handler) ServePluginAuthURL(c *gin.Context) bool {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
 		return true
 	}
-	resp, handled, errStart := host.StartLogin(ctx, provider, baseURL)
+	resp, handled, errStart := host.StartLogin(ctx, provider, baseURL, pluginAuthStartMetadata(c))
 	if !handled {
 		return false
 	}
@@ -217,4 +217,20 @@ func (h *Handler) ServePluginAuthURL(c *gin.Context) bool {
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": resp.URL, "state": state})
 	return true
+}
+
+func pluginAuthStartMetadata(c *gin.Context) map[string]any {
+	if c == nil {
+		return nil
+	}
+	metadata := make(map[string]any)
+	for _, key := range []string{"login_method", "start_url", "region"} {
+		if value := strings.TrimSpace(c.Query(key)); value != "" {
+			metadata[key] = value
+		}
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
 }

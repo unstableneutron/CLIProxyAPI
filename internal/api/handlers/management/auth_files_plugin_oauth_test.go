@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -257,3 +258,24 @@ func (s *pluginLoginRollbackStore) Delete(_ context.Context, id string) error {
 }
 
 func (s *pluginLoginRollbackStore) SetBaseDir(string) {}
+
+func TestPluginAuthStartMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name string
+		url  string
+		want map[string]any
+	}{
+		{name: "omitted", url: "/v0/management/kiro-auth-url"},
+		{name: "kiro variant", url: "/v0/management/kiro-auth-url?login_method=idc-authcode&start_url=https%3A%2F%2Fexample.awsapps.com%2Fstart&region=eu-west-1", want: map[string]any{"login_method": "idc-authcode", "start_url": "https://example.awsapps.com/start", "region": "eu-west-1"}},
+		{name: "unrelated query ignored", url: "/v0/management/kiro-auth-url?is_webui=true&token=secret"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodGet, test.url, nil)
+			if got := pluginAuthStartMetadata(ctx); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("metadata = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
