@@ -746,11 +746,34 @@ func shutdownPluginClient(ctx context.Context, client pluginClient) {
 	if client == nil {
 		return
 	}
-	if guarded, ok := client.(*guardedPluginClient); ok {
-		guarded.ShutdownContext(ctx)
-		return
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	client.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Async native producers must cancel/drain while host callbacks still
+		// dispatch. In particular stream_close must unblock an active stream_read
+		// before the purego guard retires its callback entry. Cancellation only
+		// stops the caller waiting; it must not interrupt physical cleanup.
+		func() {
+			defer func() {
+				if recover() != nil {
+					log.Warn("pluginhost: plugin quiesce panicked during shutdown")
+				}
+			}()
+			_, _ = callPlugin[rpcEmptyResponse](context.Background(), client, pluginabi.MethodPluginQuiesce, rpcEmptyResponse{})
+		}()
+		if guarded, ok := client.(*guardedPluginClient); ok {
+			guarded.ShutdownContext(context.Background())
+			return
+		}
+		client.Shutdown()
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 func cleanPluginPath(path string) string {

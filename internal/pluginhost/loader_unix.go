@@ -52,10 +52,6 @@ static const char* cliproxy_dlerror(void) {
 	return dlerror();
 }
 
-static int cliproxy_dlclose(void* handle) {
-	return dlclose(handle);
-}
-
 static int cliproxy_call_init(void* fn, const cliproxy_host_api* host, cliproxy_plugin_api* plugin) {
 	return ((cliproxy_plugin_init_fn)fn)(host, plugin);
 }
@@ -116,24 +112,23 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 	if handle == nil {
 		return nil, fmt.Errorf("dlopen %s: %s", file.Path, dlerrorString())
 	}
+	// A Go c-shared image can start runtime threads during dlopen, before init.
+	// Keep every opened image mapped until process exit, including init failures.
 
 	cSymbol := C.CString("cliproxy_plugin_init")
 	initSymbol := C.cliproxy_dlsym(handle, cSymbol)
 	C.free(unsafe.Pointer(cSymbol))
 	if initSymbol == nil {
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("missing cliproxy_plugin_init: %s", dlerrorString())
 	}
 
 	hostAPI := (*C.cliproxy_host_api)(C.malloc(C.size_t(unsafe.Sizeof(C.cliproxy_host_api{}))))
 	if hostAPI == nil {
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("allocate host api")
 	}
 	hostCtx := C.malloc(C.size_t(unsafe.Sizeof(C.uintptr_t(0))))
 	if hostCtx == nil {
 		C.free(unsafe.Pointer(hostAPI))
-		C.cliproxy_dlclose(handle)
 		return nil, fmt.Errorf("allocate host context")
 	}
 	id := hostCallbackID.Add(1)
@@ -217,10 +212,8 @@ func (c *dynamicLibraryClient) Shutdown() {
 		C.free(unsafe.Pointer(c.hostAPI))
 		c.hostAPI = nil
 	}
-	if c.handle != nil {
-		C.cliproxy_dlclose(c.handle)
-		c.handle = nil
-	}
+	// Draining plugin work does not stop a Go shared library's runtime threads.
+	// Like the Windows and purego loaders, retain its mapping until process exit.
 }
 
 func dlerrorString() string {

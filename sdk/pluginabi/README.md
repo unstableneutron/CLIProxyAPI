@@ -69,3 +69,17 @@ overrides, and filters. Payload processing receives the same resolved model,
 client-requested alias, source format, headers, and request path used by
 built-in executors. Preparation errors are returned without invoking the
 plugin callback.
+
+## Native shutdown and image lifetime
+
+Explicit unload and host shutdown call `plugin.quiesce` before retiring host
+callback dispatch. Async plugins must stop admission, cancel upstream work, and
+wait for their producer goroutines before returning from quiesce. Caller context
+cancellation may detach the runtime immediately, but physical cleanup continues
+without canceling the quiesce/drain sequence. A hung trusted plugin can therefore
+retain resources until process exit; the host must not free callbacks underneath it.
+
+Unix CGO, like the Windows and purego loaders, retains native images until process
+exit. Go c-shared runtime threads cannot safely be stopped with `dlclose`, even
+after provider work drains. Replacing a native image requires process restart;
+logical unload is not a promise to reclaim its executable mappings.
