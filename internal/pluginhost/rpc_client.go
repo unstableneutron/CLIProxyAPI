@@ -108,6 +108,9 @@ func registerRPCPlugin(ctx context.Context, host *Host, id string, client plugin
 	if resp.SchemaVersion > pluginabi.SchemaVersion {
 		return pluginapi.Plugin{}, fmt.Errorf("plugin schema version %d is not supported", resp.SchemaVersion)
 	}
+	if resp.Capabilities.IngressProxy && resp.SchemaVersion < pluginabi.SchemaVersionIngressProxy {
+		return pluginapi.Plugin{}, fmt.Errorf("ingress proxy requires plugin schema version %d", pluginabi.SchemaVersionIngressProxy)
+	}
 	adapter := &rpcPluginAdapter{id: id, host: host, client: client}
 	schemaVersion := resp.SchemaVersion
 	if schemaVersion == 0 {

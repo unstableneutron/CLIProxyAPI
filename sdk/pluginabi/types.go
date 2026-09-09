@@ -19,7 +19,8 @@ const (
 	// should keep schema_version < 6.
 	// Version 7 preserves scoped failures and retry hints in envelopes and stream
 	// callbacks. Plugins requiring these semantics must declare version 7.
-	SchemaVersion uint32 = 7
+	// Version 8 adds authenticated ingress proxy plans and explicit TLS curves.
+	SchemaVersion uint32 = 8
 	// SchemaVersionStreamChunkOmitRequestBody is the first schema version that omits
 	// request bodies on payload stream-chunk interceptor calls.
 	SchemaVersionStreamChunkOmitRequestBody uint32 = 3
@@ -35,6 +36,10 @@ const (
 	// SchemaVersionFailureDetails is the first schema version preserving native
 	// failure scope and retry hints, including asynchronous stream callbacks.
 	SchemaVersionFailureDetails uint32 = 7
+	// SchemaVersionIngressProxy is the first schema supporting authenticated ingress.
+	SchemaVersionIngressProxy uint32 = 8
+	// SchemaVersionTLSCurves is the first schema honoring explicit TLS curve profiles.
+	SchemaVersionTLSCurves uint32 = 8
 )
 
 const (

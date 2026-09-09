@@ -27,8 +27,11 @@ func TestEnvelopeRoundTrip(t *testing.T) {
 }
 
 func TestMethodNamesAreStable(t *testing.T) {
-	if SchemaVersion != 7 {
-		t.Fatalf("SchemaVersion = %d, want 7", SchemaVersion)
+	if SchemaVersion != 8 {
+		t.Fatalf("SchemaVersion = %d, want 8", SchemaVersion)
+	}
+	if SchemaVersionIngressProxy != 8 || SchemaVersionTLSCurves != 8 {
+		t.Fatal("ingress and TLS curves require schema 8")
 	}
 	if SchemaVersionWebSocketResponseObserver != 4 {
 		t.Fatalf("SchemaVersionWebSocketResponseObserver = %d, want 4", SchemaVersionWebSocketResponseObserver)
