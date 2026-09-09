@@ -199,12 +199,16 @@ func (h *Host) currentRuntimeConfig() *config.Config {
 
 func (c *hostHTTPClient) newHTTPClientForRequest(ctx context.Context, cfg *config.Config, req pluginapi.HTTPRequest, httpReq *http.Request) (*http.Client, func(), error) {
 	profile := req.WireProfile
-	if profile == nil || (!profile.HTTP1Only && !profile.DisableAutoCompression && len(profile.HeaderProfile) == 0) {
+	if profile == nil || (!profile.HTTP1Only && !profile.DisableAutoCompression && len(profile.HeaderProfile) == 0 && len(profile.TLSCurves) == 0) {
 		client := helps.NewProxyAwareHTTPClient(ctx, cfg, c.auth, 0)
 		if client == nil {
 			client = &http.Client{}
 		}
 		return client, nil, nil
+	}
+	curvePreferences, errCurves := parseTLSCurvePreferences(profile.TLSCurves)
+	if errCurves != nil {
+		return nil, nil, errCurves
 	}
 
 	// Priority 1: Auth proxy
@@ -221,6 +225,7 @@ func (c *hostHTTPClient) newHTTPClientForRequest(ctx context.Context, cfg *confi
 	var explicitDirect bool
 	var isConfiguredSOCKS bool
 	var builtByProxyutil bool
+	var isConfiguredHTTPSProxy bool
 	if proxyStr != "" {
 		setting, errParse := proxyutil.Parse(proxyStr)
 		if errParse != nil {
@@ -240,6 +245,9 @@ func (c *hostHTTPClient) newHTTPClientForRequest(ctx context.Context, cfg *confi
 			builtByProxyutil = true
 			if setting.URL != nil && (strings.EqualFold(setting.URL.Scheme, "socks5") || strings.EqualFold(setting.URL.Scheme, "socks5h")) {
 				isConfiguredSOCKS = true
+			}
+			if setting.URL != nil && strings.EqualFold(setting.URL.Scheme, "https") {
+				isConfiguredHTTPSProxy = true
 			}
 		default: // ModeInherit
 			proxyStr = ""
@@ -317,6 +325,20 @@ func (c *hostHTTPClient) newHTTPClientForRequest(ctx context.Context, cfg *confi
 				return baseTransport.DialTLS(network, addr)
 			}
 		}
+	}
+	if len(curvePreferences) > 0 {
+		if callerTLSDialer != nil {
+			return nil, nil, fmt.Errorf("pluginhost: TLS curve profile is not supported with a custom TLS dialer")
+		}
+		if isConfiguredHTTPSProxy && baseTransport.DialTLSContext != nil {
+			return nil, nil, fmt.Errorf("pluginhost: TLS curve profile is not supported with the configured HTTPS proxy TLS dialer")
+		}
+		if baseTransport.TLSClientConfig == nil {
+			baseTransport.TLSClientConfig = &tls.Config{}
+		} else {
+			baseTransport.TLSClientConfig = baseTransport.TLSClientConfig.Clone()
+		}
+		baseTransport.TLSClientConfig.CurvePreferences = append([]tls.CurveID(nil), curvePreferences...)
 	}
 
 	if forceHTTP1 && !hasHeaderProfile {
@@ -506,6 +528,35 @@ func (c *hostHTTPClient) newHTTPClientForRequest(ctx context.Context, cfg *confi
 	}
 
 	return client, cleanup, nil
+}
+
+func parseTLSCurvePreferences(names []string) ([]tls.CurveID, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	curves := make([]tls.CurveID, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if _, exists := seen[name]; exists {
+			return nil, fmt.Errorf("pluginhost: duplicate TLS curve %q", name)
+		}
+		seen[name] = struct{}{}
+		var curve tls.CurveID
+		switch name {
+		case "X25519":
+			curve = tls.X25519
+		case "P-256":
+			curve = tls.CurveP256
+		case "P-384":
+			curve = tls.CurveP384
+		case "P-521":
+			curve = tls.CurveP521
+		default:
+			return nil, fmt.Errorf("pluginhost: unsupported TLS curve %q", name)
+		}
+		curves = append(curves, curve)
+	}
+	return curves, nil
 }
 
 type requestHolder struct {

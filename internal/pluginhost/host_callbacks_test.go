@@ -758,6 +758,7 @@ func TestDecodeHostHTTPRequestWithWireProfile(t *testing.T) {
 		HTTP1Only:              true,
 		DisableAutoCompression: true,
 		HeaderProfile:          []string{"host", "user-agent"},
+		TLSCurves:              []string{"X25519", "P-256"},
 	}
 
 	// Flat rpcHostHTTPRequest
@@ -783,6 +784,9 @@ func TestDecodeHostHTTPRequestWithWireProfile(t *testing.T) {
 	}
 	if len(decoded.WireProfile.HeaderProfile) != 2 || decoded.WireProfile.HeaderProfile[0] != "host" {
 		t.Fatalf("decoded header profile mismatch: %#v", decoded.WireProfile.HeaderProfile)
+	}
+	if len(decoded.WireProfile.TLSCurves) != 2 || decoded.WireProfile.TLSCurves[0] != "X25519" {
+		t.Fatalf("decoded TLS curves mismatch: %#v", decoded.WireProfile.TLSCurves)
 	}
 
 	// Nested httpRequest
@@ -828,5 +832,8 @@ func TestDecodeHostHTTPRequestWithWireProfile(t *testing.T) {
 	}
 	if len(decodedSDK.WireProfile.HeaderProfile) != 2 || decodedSDK.WireProfile.HeaderProfile[0] != "host" {
 		t.Fatalf("decoded sdk header profile mismatch: %#v", decodedSDK.WireProfile.HeaderProfile)
+	}
+	if len(decodedSDK.WireProfile.TLSCurves) != 2 || decodedSDK.WireProfile.TLSCurves[1] != "P-256" {
+		t.Fatalf("decoded sdk TLS curves mismatch: %#v", decodedSDK.WireProfile.TLSCurves)
 	}
 }

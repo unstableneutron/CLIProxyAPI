@@ -784,6 +784,9 @@ type HTTPWireProfile struct {
 	DisableAutoCompression bool `json:"disable_auto_compression,omitempty"`
 	// HeaderProfile defines desired header-name order and exact casing on the wire.
 	HeaderProfile []string `json:"header_profile,omitempty"`
+	// TLSCurves defines the exact TLS supported-groups set. Go applies its internal preference order.
+	// Accepted values are X25519, P-256, P-384, and P-521.
+	TLSCurves []string `json:"tls_curves,omitempty"`
 }
 
 // HTTPRequest describes an upstream HTTP request issued through the host.

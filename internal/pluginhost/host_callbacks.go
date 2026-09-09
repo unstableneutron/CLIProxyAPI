@@ -260,6 +260,7 @@ func cloneWireProfile(src *pluginapi.HTTPWireProfile) *pluginapi.HTTPWireProfile
 	}
 	dst := *src
 	dst.HeaderProfile = append([]string(nil), src.HeaderProfile...)
+	dst.TLSCurves = append([]string(nil), src.TLSCurves...)
 	return &dst
 }
 
