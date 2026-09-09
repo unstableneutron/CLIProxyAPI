@@ -91,7 +91,7 @@ func TestPluginFailureScopeAndRetryHints(t *testing.T) {
 				Retryable: true, RetryAfterMS: &ms,
 			}})
 			err, ok := errDecode.(rpcError)
-			if !ok || err.Code != "abort" || err.Error() != "stop" || err.StatusCode() != 429 || !err.Retryable() {
+			if !ok || err.ErrorCode() != "abort" || err.Error() != "stop" || err.StatusCode() != 429 || !err.Retryable() {
 				t.Fatalf("failure fields lost: %#v", errDecode)
 			}
 			if err.IsRequestScoped() != (scope == "request") || err.IsCredentialScoped() != (scope == "credential") {

@@ -54,6 +54,8 @@ func (e rpcError) StatusCode() int {
 	return e.statusCode
 }
 
+func (e rpcError) ErrorCode() string { return e.Code }
+
 func (e rpcError) IsRequestScoped() bool    { return e.scope == "request" }
 func (e rpcError) IsCredentialScoped() bool { return e.scope == "credential" }
 func (e rpcError) Retryable() bool          { return e.retryable }

@@ -804,8 +804,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 
 					statusCode := statusCodeFromResult(result.Error)
 					if isModelSupportResultError(result.Error) {
-						next := now.Add(12 * time.Hour)
-						state.NextRetryAfter = next
+						if disableCooling {
+							state.NextRetryAfter = time.Time{}
+						} else {
+							state.NextRetryAfter = now.Add(12 * time.Hour)
+						}
 					} else if isCloudflareChallengeResultError(result.Error) {
 						next, backoffLevel := nextCloudflareCooldown(state.Quota.BackoffLevel, disableCooling, now)
 						state.NextRetryAfter = next
@@ -1429,6 +1432,10 @@ func resultErrorFromError(err error) *Error {
 		resultErr = cloneError(sourceErr)
 	} else {
 		resultErr = &Error{Message: err.Error()}
+		var coded interface{ ErrorCode() string }
+		if errors.As(err, &coded) {
+			resultErr.Code = coded.ErrorCode()
+		}
 		var retryHint interface{ Retryable() bool }
 		if errors.As(err, &retryHint) {
 			resultErr.Retryable = retryHint.Retryable()
@@ -1632,6 +1639,14 @@ func isModelSupportError(err error) bool {
 	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
 		return false
 	}
+	var coreErr *Error
+	if errors.As(err, &coreErr) && coreErr.Code == "unsupported_model" {
+		return true
+	}
+	var coded interface{ ErrorCode() string }
+	if errors.As(err, &coded) && coded.ErrorCode() == "unsupported_model" {
+		return true
+	}
 	return isModelSupportErrorMessage(err.Error())
 }
 
@@ -1669,7 +1684,7 @@ func isModelSupportResultError(err *Error) bool {
 	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
 		return false
 	}
-	return isModelSupportErrorMessage(err.Message)
+	return err.Code == "unsupported_model" || isModelSupportErrorMessage(err.Message)
 }
 
 func isCloudflareChallengeErrorMessage(message string) bool {
