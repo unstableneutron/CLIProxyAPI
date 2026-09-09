@@ -408,11 +408,34 @@ func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts cor
 		return preparedExecutorCall{}, errOutput
 	}
 
+	baseModel := strings.TrimSpace(thinking.ParseSuffix(req.Model).ModelName)
+	if baseModel == "" {
+		baseModel = req.Model
+	}
+	originalPayload := opts.OriginalRequest
+	if len(originalPayload) == 0 {
+		originalPayload = req.Payload
+	}
+	originalTranslated := bytes.Clone(originalPayload)
+	if inputRequested != "" && inputRequested != inputFormat {
+		originalTranslated = sdktranslator.TranslateRequest(inputRequested, inputFormat, baseModel, originalPayload, opts.Stream)
+	}
+
 	nativeReq := req
 	nativeOpts := opts
+	nativeReq.Model = baseModel
+	nativeReq.Payload = bytes.Clone(req.Payload)
 	if inputRequested != "" && inputRequested != inputFormat {
-		nativeReq.Payload = sdktranslator.TranslateRequest(inputRequested, inputFormat, req.Model, req.Payload, opts.Stream)
+		nativeReq.Payload = sdktranslator.TranslateRequest(inputRequested, inputFormat, baseModel, req.Payload, opts.Stream)
 	}
+	var errThinking error
+	nativeReq.Payload, errThinking = helps.ApplyRequestThinking(nativeReq.Payload, req, opts, inputRequested.String(), inputFormat.String(), a.Identifier())
+	if errThinking != nil {
+		return preparedExecutorCall{}, errThinking
+	}
+	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
+	requestPath := helps.PayloadRequestPath(opts)
+	nativeReq.Payload = helps.ApplyPayloadConfigWithRequest(a.host.currentRuntimeConfig(), baseModel, inputFormat.String(), inputRequested.String(), "", nativeReq.Payload, originalTranslated, requestedModel, requestPath, opts.Headers)
 	nativeReq.Format = outputFormat
 	nativeOpts.SourceFormat = inputFormat
 	nativeOpts.ResponseFormat = outputFormat

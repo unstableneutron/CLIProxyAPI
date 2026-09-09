@@ -59,3 +59,13 @@ Go applies its internal preference order. The host uses a request-private TLS
 configuration without changing HTTP/2, ALPN, or proxy selection. Transports
 with a custom TLS dialer are rejected when the host cannot guarantee that the
 dialer will honor the profile.
+
+## Native executor request preparation
+
+Before invoking a native executor, the host translates both the current and
+original request into the executor input format, applies canonical thinking
+validation and suffix handling, then applies configured payload defaults,
+overrides, and filters. Payload processing receives the same resolved model,
+client-requested alias, source format, headers, and request path used by
+built-in executors. Preparation errors are returned without invoking the
+plugin callback.
