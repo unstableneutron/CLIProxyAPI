@@ -2880,12 +2880,10 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return nil
 		})
 
+		uploadRead := make(chan error, 1)
 		go func() {
-			for {
-				if _, _, errRead := conn.ReadMessage(); errRead != nil {
-					return
-				}
-			}
+			_, _, errRead := conn.ReadMessage()
+			uploadRead <- errRead
 		}()
 
 		// Wait until client has entered writeMessage on sessionless path.
@@ -2911,6 +2909,18 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return
 		}
 
+		// Pong unblocks the upload hook, but does not mean the request was read.
+		// Keep the connection open until the entire application message arrives.
+		select {
+		case errRead := <-uploadRead:
+			if errRead != nil {
+				t.Errorf("read uploaded request: %v", errRead)
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("timed out reading uploaded request")
+			return
+		}
 		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
 	}))
@@ -2923,8 +2933,9 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 	})
 	auth := &cliproxyauth.Auth{ID: "auth-sessionless-ping", Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
 	req := cliproxyexecutor.Request{
-		Model:   "gpt-5.6-sol",
-		Payload: []byte(`{"model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":"ping test sessionless"}]}`),
+		Model: "gpt-5.6-sol",
+		// Exceed socket buffers so a premature server close cannot hide behind a tiny write.
+		Payload: []byte(`{"model":"gpt-5.6-sol","input":[{"type":"message","role":"user","content":"` + strings.Repeat("x", 1<<20) + `"}]}`),
 	}
 	opts := cliproxyexecutor.Options{
 		SourceFormat:   sdktranslator.FromString("openai-response"),
