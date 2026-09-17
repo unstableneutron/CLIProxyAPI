@@ -16,6 +16,35 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 ```
 - Common flags: `--config <path>`, `--tui`, `--standalone`, `--local-model`, `--no-browser`, `--oauth-callback-port <port>`
 
+## Fork Ship and release boundary
+
+- In `unstableneutron/CLIProxyAPI`, Ship defaults to a normal source push only.
+  Merge upstream into published main; never rebase or force-push published history.
+  Record origin and upstream commits, run `mise run verify`, commit, then rerun
+  gates on the exact clean commit. Fetch origin immediately before pushing and
+  stop if its main changed. Never deploy services as part of Ship.
+- For plugin-host changes, build both `mise run build` and `mise run build:purego`
+  using separate absolute `OUTPUT` paths. Independently pin a clean cpa-plugins
+  commit and run its `mise run smoke` with `HOST_CGO`, `HOST_PUREGO`, and
+  `ENVIRONMENT_AUTH_SMOKE=1`. Also verify downloaded existing release checksums
+  and smoke those exact libraries when compatibility with shipped assets matters.
+- CPA tags trigger host archives AND GHCR publication. Source authorization is
+  not tag/release authorization. `mise run release:publish <tag>` is explicit;
+  fork tags are `v<upstream-version>-un.<version>` prereleases, never stable/latest.
+  Before tagging, qualify each intended platform/loader artifact with tests and
+  smoke, record exact source/toolchain/platform/ABI/schema/build metadata and
+  SHA-256 checksums, and arrange post-download verification against the vetted
+  local checksums. The current host workflow does not automate all those gates;
+  do not describe a successful source Ship as a vetted binary release.
+- CPA must never silently release `unstableneutron/cpa-plugins`. Publish there
+  only with explicit repository/version/artifact authorization, an exact clean
+  pushed plugin commit, and that repository's independent `release:publish`
+  gates. Host-only changes do not justify replacement plugin assets. Keep
+  prereleases distinct from stable; stable promotion needs separate qualification.
+  Never overwrite tags/assets on retry: inspect existing provenance/checksums,
+  verify an exact match or stop. Never log credentials or include auth files in
+  build metadata. Report release URLs/checksums or the precise deferred command.
+
 ## Config
 - Default config: `config.yaml` (template: `config.example.yaml`)
 - `.env` is auto-loaded from the working directory
