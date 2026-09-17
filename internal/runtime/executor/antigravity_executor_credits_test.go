@@ -21,16 +21,38 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
-// resetAntigravityCreditsRetryState clears the package-level credits state
-// between tests. It empties each map in place instead of assigning a fresh
-// sync.Map, because credits hint refreshes run on background goroutines that
-// may still be writing these maps when a test's cleanup runs. Replacing the
-// variable is an unsynchronized write and races with them; Clear is not.
+// Drain refreshes before clearing test state or replacing the global KV client
+// in the next test. Refresh holds state.mu until all balance/hint writes finish.
 func resetAntigravityCreditsRetryState() {
+	antigravityCreditsHintRefreshByID.Range(func(_, value any) bool {
+		state := value.(*antigravityCreditsHintRefreshState)
+		state.mu.Lock()
+		state.mu.Unlock()
+		return true
+	})
 	antigravityCreditsFailureByAuth.Clear()
 	antigravityShortCooldownByAuth.Clear()
 	antigravityCreditsBalanceByAuth.Clear()
 	antigravityCreditsHintRefreshByID.Clear()
+}
+
+func TestAntigravityCreditsCleanupDrainsRefresh(t *testing.T) {
+	resetAntigravityCreditsRetryState()
+	state := &antigravityCreditsHintRefreshState{}
+	state.mu.Lock()
+	antigravityCreditsHintRefreshByID.Store(t.Name(), state)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer state.mu.Unlock()
+		// Like a refresh, publish its balance before releasing the state lock.
+		antigravityCreditsBalanceByAuth.Store(t.Name(), antigravityCreditsBalance{Known: true})
+	}()
+	resetAntigravityCreditsRetryState()
+	<-done
+	if _, ok := antigravityCreditsBalanceByAuth.Load(t.Name()); ok {
+		t.Fatal("refresh wrote balance after cleanup; it could also read a replaced KV client")
+	}
 }
 
 type closeSignalReadCloser struct {
