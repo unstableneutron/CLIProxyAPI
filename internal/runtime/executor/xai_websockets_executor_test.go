@@ -2016,12 +2016,10 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			return nil
 		})
 
+		uploadRead := make(chan error, 1)
 		go func() {
-			for {
-				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
-					return
-				}
-			}
+			_, _, errRead := conn.ReadMessage()
+			uploadRead <- errRead
 		}()
 
 		select {
@@ -2041,6 +2039,18 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			close(pongDeliveredDuringWrite)
 		case <-time.After(2 * time.Second):
 			t.Errorf("pong was not received while payload write was in progress")
+			return
+		}
+
+		// Do not close the connection before the released upload reaches the server.
+		select {
+		case errRead := <-uploadRead:
+			if errRead != nil {
+				t.Errorf("read upload: %v", errRead)
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("timed out waiting for upload after pong delivery")
 			return
 		}
 
@@ -2112,12 +2122,10 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return nil
 		})
 
+		uploadRead := make(chan error, 1)
 		go func() {
-			for {
-				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
-					return
-				}
-			}
+			_, _, errRead := conn.ReadMessage()
+			uploadRead <- errRead
 		}()
 
 		select {
@@ -2137,6 +2145,18 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			close(pongDeliveredDuringWrite)
 		case <-time.After(2 * time.Second):
 			t.Errorf("pong was not received while payload write was in progress on sessionless connection")
+			return
+		}
+
+		// Do not close the connection before the released upload reaches the server.
+		select {
+		case errRead := <-uploadRead:
+			if errRead != nil {
+				t.Errorf("read upload: %v", errRead)
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("timed out waiting for upload after pong delivery")
 			return
 		}
 
