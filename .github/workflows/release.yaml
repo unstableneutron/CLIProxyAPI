@@ -1,12 +1,23 @@
 name: release
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('qualify {0}', inputs.tag) || github.ref_name }}
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact tag from mise release:plan (build only)
+        required: true
+        type: string
   push:
     tags:
       - 'v*'
 
 permissions:
   contents: write
+  actions: read
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 concurrency:
   group: release-${{ github.ref_name }}
@@ -14,6 +25,7 @@ concurrency:
 
 jobs:
   build-hosted:
+    if: github.event_name == 'workflow_dispatch'
     name: build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -39,7 +51,7 @@ jobs:
           FORMAT: ${{ matrix.format }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           commit="$(git rev-parse --short HEAD)"
           build_date="$(git show -s --format=%cI HEAD)"
           ldflags="-s -w -X main.Version=$version -X main.Commit=$commit -X main.BuildDate=$build_date"
@@ -48,12 +60,13 @@ jobs:
             dir="dist/$variant"; mkdir -p "$dir"
             cgo=1; suffix=""; [[ "$variant" == no-plugin ]] && cgo=0 && suffix=_no-plugin
             CGO_ENABLED="$cgo" GOOS="$GOOS" GOARCH="$GOARCH" go build -buildvcs=false -trimpath -ldflags="$ldflags" -o "$dir/$binary" ./cmd/server/
+            python3 .agents/buildinfo.py "$dir/$binary"
             cp LICENSE README.md README_CN.md config.example.yaml "$dir/"
             archive="dist/CLIProxyAPI_${version}_${GOOS}_${ASSET_ARCH}${suffix}.${FORMAT}"
             if [[ "$FORMAT" == zip ]]; then
-              (cd "$dir" && 7z a -tzip -mx=9 "${GITHUB_WORKSPACE}/$archive" "$binary" LICENSE README.md README_CN.md config.example.yaml)
+              (cd "$dir" && 7z a -tzip -mx=9 "${GITHUB_WORKSPACE}/$archive" "$binary" LICENSE README.md README_CN.md config.example.yaml BUILDINFO.json)
             else
-              tar -C "$dir" -czf "$archive" "$binary" LICENSE README.md README_CN.md config.example.yaml
+              tar -C "$dir" -czf "$archive" "$binary" LICENSE README.md README_CN.md config.example.yaml BUILDINFO.json
             fi
           done
       - uses: actions/upload-artifact@v4
@@ -64,6 +77,7 @@ jobs:
           retention-days: 1
 
   build-linux:
+    if: github.event_name == 'workflow_dispatch'
     name: build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -85,7 +99,7 @@ jobs:
           MANYLINUX_IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"; commit="$(git rev-parse --short HEAD)"; build_date="$(git show -s --format=%cI HEAD)"
+          version="${RELEASE_TAG#v}"; commit="$(git rev-parse --short HEAD)"; build_date="$(git show -s --format=%cI HEAD)"
           ldflags="-s -w -X main.Version=$version -X main.Commit=$commit -X main.BuildDate=$build_date"
           mkdir -p dist/plugin dist/no-plugin
           docker run --rm -v "$PWD:/src" -w /src \
@@ -106,9 +120,13 @@ jobs:
             [[ -z "$max" || "$(printf "2.17\n%s\n" "$max" | sort -V | tail -1)" == 2.17 ]] || { echo "requires GLIBC_$max" >&2; exit 1; }
           '
           CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" go build -buildvcs=false -trimpath -ldflags="$ldflags" -o dist/no-plugin/cli-proxy-api ./cmd/server/
-          for variant in plugin no-plugin; do cp LICENSE README.md README_CN.md config.example.yaml "dist/$variant/"; done
-          tar -C dist/plugin -czf "dist/CLIProxyAPI_${version}_linux_${ASSET_ARCH}.tar.gz" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
-          tar -C dist/no-plugin -czf "dist/CLIProxyAPI_${version}_linux_${ASSET_ARCH}_no-plugin.tar.gz" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          for variant in plugin no-plugin; do
+            python3 .agents/buildinfo.py "dist/$variant/cli-proxy-api"
+            "dist/$variant/cli-proxy-api" -help
+            cp LICENSE README.md README_CN.md config.example.yaml "dist/$variant/"
+          done
+          tar -C dist/plugin -czf "dist/CLIProxyAPI_${version}_linux_${ASSET_ARCH}.tar.gz" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml BUILDINFO.json
+          tar -C dist/no-plugin -czf "dist/CLIProxyAPI_${version}_linux_${ASSET_ARCH}_no-plugin.tar.gz" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml BUILDINFO.json
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -117,6 +135,7 @@ jobs:
           retention-days: 1
 
   build-freebsd:
+    if: github.event_name == 'workflow_dispatch'
     name: build ${{ matrix.target }}
     runs-on: ubuntu-latest
     strategy:
@@ -133,7 +152,7 @@ jobs:
           cache: true
       - id: metadata
         run: |
-          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "build_date=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
       - if: matrix.cgo
@@ -163,7 +182,8 @@ jobs:
         run: |
           mkdir -p dist/archive
           cp dist/bin/cli-proxy-api LICENSE README.md README_CN.md config.example.yaml dist/archive/
-          tar -C dist/archive -czf "dist/CLIProxyAPI_${{ steps.metadata.outputs.version }}_freebsd_${{ matrix.asset_arch }}${{ matrix.suffix }}.tar.gz" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml
+          python3 .agents/buildinfo.py dist/archive/cli-proxy-api
+          tar -C dist/archive -czf "dist/CLIProxyAPI_${{ steps.metadata.outputs.version }}_freebsd_${{ matrix.asset_arch }}${{ matrix.suffix }}.tar.gz" cli-proxy-api LICENSE README.md README_CN.md config.example.yaml BUILDINFO.json
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -174,12 +194,27 @@ jobs:
   publish:
     name: publish release
     runs-on: ubuntu-latest
-    needs: [build-hosted, build-linux, build-freebsd]
+    if: github.event_name == 'push'
     steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Resolve qualified build
+        id: qualified
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id="$(git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" | sed -n 's/^Qualified-Run: //p')"
+          [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
+          python3 -B .agents/release.py --check-run "$run_id" --expected-tag "$GITHUB_REF_NAME"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+          run-id: ${{ steps.qualified.outputs.run_id }}
+          github-token: ${{ github.token }}
       - name: Validate and publish assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -201,6 +236,9 @@ jobs:
           [[ ${#archives[@]} -eq ${#expected[@]} ]] || { printf 'expected %d archives, found %d\n' "${#expected[@]}" "${#archives[@]}" >&2; exit 1; }
           for asset in "${expected[@]}"; do [[ -f "$asset" ]] || { echo "missing $asset" >&2; exit 1; }; done
           sha256sum "${archives[@]}" | sort -k2 > checksums.txt
+          qualified_hash="$(git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" | sed -n 's/^Qualified-Checksums: //p')"
+          [[ "$qualified_hash" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$(sha256sum checksums.txt | cut -d' ' -f1)" == "$qualified_hash" ]]
 
           prerelease=false
           release_args=("$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes)
@@ -223,3 +261,7 @@ jobs:
               'any(.assets[]; .name == $name and .state == "uploaded" and .size > 0)' \
               <<<"$release_json" >/dev/null || { echo "published release is missing uploaded asset: $asset" >&2; exit 1; }
           done
+          mkdir downloaded
+          gh release download "$GITHUB_REF_NAME" --dir downloaded
+          for asset in "${expected[@]}" checksums.txt; do cmp "$asset" "downloaded/$asset"; done
+          (cd downloaded && sha256sum -c checksums.txt)

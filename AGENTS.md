@@ -35,13 +35,22 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
   architecture-aware packaging and extracted-library smoke. Follow that repo's
   README release boundary, including compatibility checks of shipped assets.
 - CPA tags trigger host archives AND GHCR publication. Source authorization is
-  not tag/release authorization. `mise run release:publish <tag>` is explicit;
-  fork tags are `v<upstream-version>-un.<version>` prereleases, never stable/latest.
-  Before tagging, qualify each intended platform/loader artifact with tests and
-  smoke, record exact source/toolchain/platform/ABI/schema/build metadata and
-  SHA-256 checksums, and arrange post-download verification against the vetted
-  local checksums. The current host workflow does not automate all those gates;
-  do not describe a successful source Ship as a vetted binary release.
+  not tag/release authorization. Use `mise run release:plan`, then explicitly
+  `mise run release:publish <computed-tag>`; never manually guess release tags.
+  Tags are `v<upstream-version>-un.<build>` prereleases, never stable/latest.
+  The positive integer build starts at 1 independently for each exact upstream
+  release at the source/upstream-main merge-base. Historical `v7.2.94-un.0.1.*`
+  tags are preserved but excluded from numbering. Ambiguous bases, malformed
+  tags, unpushed/dirty source and origin drift must stop publication.
+  Run `mise run release:build` on pushed source, download that run's archives,
+  and qualify the exact platform/loader artifacts before tagging. Record tests,
+  smoke, ABI/schema requirements and platform limitations; BUILDINFO records
+  source/toolchain/target metadata. Set `QUALIFIED_RUN=<run-id>` and
+  `QUALIFIED_DIR=<directory-with-only-the-14-archives>` for release:publish.
+  The tag binds the run and checksums; Actions publishes those same archives,
+  then downloads and compares them. Independently verify downloads and smoke
+  applicable Linux binaries with published plugins; do not claim unsupported
+  platforms were runtime-tested. Source Ship alone is not a vetted release.
 - CPA never publishes cpa-plugins automatically. Plugin publication policy is
   canonical in that repository's README; host-only changes do not authorize it.
   Never log credentials or include auth files in build metadata.
