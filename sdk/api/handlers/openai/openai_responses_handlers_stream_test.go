@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
@@ -316,6 +317,10 @@ func TestForwardResponsesStreamDropsIncompleteTrailingDataChunkOnFlush(t *testin
 }
 
 func TestForwardResponsesStreamErrorEventPreservesNestedError(t *testing.T) {
+	synctest.Test(t, testForwardResponsesStreamErrorEventPreservesNestedError)
+}
+
+func testForwardResponsesStreamErrorEventPreservesNestedError(t *testing.T) {
 	h, recorder, c, flusher := newResponsesStreamTestHandler(t)
 	c.Request.Header.Set("User-Agent", "codex_vscode/0.153.4 (Ubuntu 22.4.0; x86_64)")
 
@@ -323,16 +328,20 @@ func TestForwardResponsesStreamErrorEventPreservesNestedError(t *testing.T) {
 	errs := make(chan *interfaces.ErrorMessage, 1)
 
 	go func() {
+		// Match ExecuteStreamWithAuthManager: enqueue terminal errors before
+		// closing data, so EOF cannot overtake an error that is still being built.
+		defer close(data)
+		defer close(errs)
 		data <- []byte("event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0}\n\n")
 		data <- []byte("event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"sequence_number\":1}\n\n")
-		close(data)
+		// Let the consumer reach quiescence while the terminal error is delayed.
+		synctest.Wait()
 
 		errText := `{"error":{"type":"invalid_request","code":"cyber_policy","message":"This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request. To get authorized for security work, join the Trusted Access for Cyber program: https://chatgpt.com/cyber","param":null}}`
 		errs <- &interfaces.ErrorMessage{
 			StatusCode: http.StatusBadRequest,
 			Error:      errors.New(errText),
 		}
-		close(errs)
 	}()
 
 	framer := &responsesSSEFramer{}
