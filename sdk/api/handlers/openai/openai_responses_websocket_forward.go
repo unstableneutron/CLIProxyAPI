@@ -117,6 +117,12 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			return completedOutput, completedResponseID, sortedStringSet(pendingToolCallIDs), errMsg, errTerminate
 		case chunk, ok := <-data:
 			if !ok {
+				// The producer queues terminal errors before closing data. Drain that
+				// error first when select chooses the closed data channel instead.
+				if len(errs) > 0 {
+					data = nil
+					continue
+				}
 				if !completed {
 					errMsg := &interfaces.ErrorMessage{
 						StatusCode: http.StatusRequestTimeout,
