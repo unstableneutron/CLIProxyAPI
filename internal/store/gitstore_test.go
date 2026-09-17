@@ -1830,6 +1830,16 @@ func corruptGitRepository(t *testing.T, repoDir string) {
 			t.Fatalf("remove packfile %s: %v", filepath.Base(packfile), errRemove)
 		}
 	}
+	// Alpha5 retains pack handles across reads. Reopen to verify the on-disk
+	// corruption rather than objects cached while repacking this fixture.
+	if errClose := repo.Close(); errClose != nil {
+		t.Fatalf("close repository after corruption: %v", errClose)
+	}
+	reopened, errReopen := git.PlainOpen(repoDir)
+	if errReopen != nil {
+		t.Fatalf("reopen corrupted repository: %v", errReopen)
+	}
+	repo = reopened
 	if errVerify := verifyRepositoryHead(repo); !isRepositoryCorruptionError(errVerify) {
 		t.Fatalf("verifyRepositoryHead error = %v, want repository corruption", errVerify)
 	}
