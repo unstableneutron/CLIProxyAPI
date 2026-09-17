@@ -1324,24 +1324,30 @@ func TestCodexWebsocketsExecutor_BootstrapNonOverload_StillNotifiesDownstreamDis
 }
 
 type mockClock struct {
-	mu  sync.Mutex
-	cur time.Time
+	mu      sync.Mutex
+	cur     time.Time
+	started chan struct{}
+	once    sync.Once
 }
 
 func (m *mockClock) now() time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.once.Do(func() { close(m.started) })
 	return m.cur
 }
 
 func (m *mockClock) advance(d time.Duration) {
+	// The server may receive the request before the client starts its budget.
+	// Wait for that initial clock read before advancing past the deadline.
+	<-m.started
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cur = m.cur.Add(d)
 }
 
 func withMockClock(t *testing.T, initial time.Time) *mockClock {
-	m := &mockClock{cur: initial}
+	m := &mockClock{cur: initial, started: make(chan struct{})}
 	cleanup := setCodexBootstrapNowForTest(m.now)
 	t.Cleanup(cleanup)
 	return m
