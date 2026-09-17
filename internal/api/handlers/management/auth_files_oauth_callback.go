@@ -224,7 +224,11 @@ func pluginAuthStartMetadata(c *gin.Context) map[string]any {
 		return nil
 	}
 	metadata := make(map[string]any)
-	for _, key := range []string{"login_method", "start_url", "region"} {
+	for _, key := range []string{"login_method", "start_url", "region", "idc_region", "idc_start_url", "scopes"} {
+		if values := c.QueryArray(key); len(values) > 1 {
+			metadata[key] = append([]string(nil), values...)
+			continue
+		}
 		if value := strings.TrimSpace(c.Query(key)); value != "" {
 			metadata[key] = value
 		}

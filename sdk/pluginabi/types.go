@@ -99,6 +99,11 @@ const (
 	MethodIngressRegister    = "ingress.register"
 	MethodIngressHandle      = "ingress.handle"
 
+	MethodQuotaIdentifier = "quota.identifier"
+	MethodQuotaDescribe   = "quota.describe"
+	MethodQuotaFetch      = "quota.fetch"
+	MethodQuotaReset      = "quota.reset"
+
 	MethodHostHTTPDo             = "host.http.do"
 	MethodHostHTTPDoStream       = "host.http.do_stream"
 	MethodHostHTTPStreamRead     = "host.http.stream_read"
@@ -114,6 +119,7 @@ const (
 	MethodHostAuthGet            = "host.auth.get"
 	MethodHostAuthGetRuntime     = "host.auth.get_runtime"
 	MethodHostAuthSave           = "host.auth.save"
+	MethodHostAffinityLookup     = "host.affinity.lookup"
 )
 
 type Envelope struct {
@@ -133,4 +139,41 @@ type Error struct {
 	// RetryAfterMS is a nonnegative relative delay in milliseconds. A pointer
 	// distinguishes an explicit zero delay from an absent hint.
 	RetryAfterMS *int64 `json:"retry_after_ms,omitempty"`
+}
+
+// Error implements the error interface for Error.
+func (e *Error) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Message
+}
+
+// StatusCode returns the HTTP status code embedded in the Error, or 0 if unset.
+func (e *Error) StatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.HTTPStatus
+}
+
+// NewError creates an Error instance with an optional HTTP status code.
+func NewError(code, message string, httpStatus ...int) *Error {
+	status := 0
+	if len(httpStatus) > 0 {
+		status = httpStatus[0]
+	}
+	return &Error{
+		Code:       code,
+		Message:    message,
+		HTTPStatus: status,
+	}
+}
+
+// NewErrorEnvelope serializes a failed RPC Envelope containing an Error with an optional HTTP status code.
+func NewErrorEnvelope(code, message string, httpStatus ...int) ([]byte, error) {
+	return json.Marshal(Envelope{
+		OK:    false,
+		Error: NewError(code, message, httpStatus...),
+	})
 }

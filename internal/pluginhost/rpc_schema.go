@@ -45,6 +45,7 @@ type rpcCapabilities struct {
 	CommandLinePlugin             bool                         `json:"command_line_plugin"`
 	ManagementAPI                 bool                         `json:"management_api"`
 	IngressProxy                  bool                         `json:"ingress_proxy"`
+	QuotaProvider                 bool                         `json:"quota_provider"`
 }
 
 type rpcIdentifierResponse struct {
@@ -132,6 +133,16 @@ type rpcManagementRegistrationResponse struct {
 	Resources []pluginapi.ResourceRoute   `json:"resources,omitempty"`
 }
 
+type rpcQuotaFetchRequest struct {
+	pluginapi.QuotaFetchRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
+type rpcQuotaResetRequest struct {
+	pluginapi.QuotaResetRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 type rpcEmptyResponse struct{}
 
 func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
@@ -163,6 +174,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 		CommandLinePlugin:             caps.CommandLinePlugin != nil,
 		ManagementAPI:                 caps.ManagementAPI != nil,
 		IngressProxy:                  caps.IngressProxy != nil,
+		QuotaProvider:                 caps.QuotaProvider != nil,
 	}
 }
 
