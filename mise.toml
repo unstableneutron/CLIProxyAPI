@@ -14,6 +14,23 @@ description = "Build a CGO-disabled purego host for native plugin smoke tests"
 env = { CGO_ENABLED = "0" }
 run = 'go build -tags=plugin_purego -o "${OUTPUT:-cli-proxy-api}" ./cmd/server'
 
+[tasks."build:smoke"]
+description = "Build a clean Linux smoke-host pair (ARCH, HOST_DIR; CC for cross builds)"
+run = '''
+set -eu
+: "${HOST_DIR:?Set an absolute output directory outside the source tree}"
+case "$HOST_DIR" in /*) ;; *) echo 'HOST_DIR must be absolute' >&2; exit 1;; esac
+case "${ARCH:-amd64}" in amd64|arm64) ;; *) exit 1;; esac
+commit=$(git rev-parse HEAD)
+test -z "$(git status --porcelain)"
+out="$HOST_DIR/linux_${ARCH:-amd64}"
+mkdir -p "$out"
+GOOS=linux GOARCH="${ARCH:-amd64}" OUTPUT="$out/cpa-cgo" mise run build
+GOOS=linux GOARCH="${ARCH:-amd64}" OUTPUT="$out/cpa-purego" mise run build:purego
+test "$(git rev-parse HEAD)" = "$commit"
+test -z "$(git status --porcelain)"
+'''
+
 [tasks."verify:compile"]
 description = "Compile the native-plugin server without retaining an artifact"
 env = { CGO_ENABLED = "1" }
