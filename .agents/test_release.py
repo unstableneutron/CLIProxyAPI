@@ -3,16 +3,39 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import tarfile
 import unittest
 import zipfile
 from unittest.mock import patch
 
-from release import archive_manifest, check_run, inspect, next_tag, require_source, run
+from release import GO_VERSION, archive_manifest, check_run, inspect, main, next_tag, require_source, run
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_dispatch_rejects_wrong_toolchain_or_unavailable_sysroot(self):
+        for version, error in (("go0.0.0", ValueError), ("go" + GO_VERSION, subprocess.CalledProcessError)):
+            def fake_run(*args):
+                if args[0] == "go":
+                    return version
+                if args[0] == "bash":
+                    raise subprocess.CalledProcessError(22, args)
+                self.fail("dispatch must not run with failed preflight")
+
+            with patch("release.inspect", return_value=("abc", "v7.3.6-un.1")), patch("release.run", side_effect=fake_run), patch("sys.argv", ["release.py", "--build"]):
+                with self.assertRaises(error):
+                    main()
+
+    def test_workflow_and_mise_use_canonical_go_version(self):
+        root = Path(__file__).resolve().parent.parent
+        workflow = (root / ".github/workflows/release.yaml").read_text()
+        self.assertEqual(workflow.count("go-version-file: .go-version"), 3)
+        self.assertNotIn("go-version-file: go.mod", workflow)
+        self.assertIn('go_version="$(cat .go-version)"', workflow)
+        self.assertIn("read_file(path='.go-version')", (root / "mise.toml").read_text())
+        self.assertEqual((root / "Dockerfile").read_text().count('GOTOOLCHAIN="go$(cat .go-version)"'), 2)
+
     def test_first_build_and_historical_tags(self):
         self.assertEqual(next_tag(["v7.3.6"], ["v7.2.94-un.0.1.2"]), "v7.3.6-un.1")
 
@@ -63,7 +86,7 @@ class ArchiveTests(unittest.TestCase):
                     ext = "zip" if system == "windows" else "tar.gz"
                     name = f"CLIProxyAPI_7.3.6-un.1_{system}_{'aarch64' if arch == 'arm64' else arch}{'' if cgo else '_no-plugin'}.{ext}"
                     path = Path(directory, name)
-                    info = dict(source="abc", tag="v7.3.6-un.1", qualification_run="123",
+                    info = dict(source="abc", tag="v7.3.6-un.1", qualification_run="123", go="go" + GO_VERSION,
                                 binary_sha256=hashlib.sha256(b"binary").hexdigest(),
                                 settings=dict(GOOS=system, GOARCH=arch, CGO_ENABLED=str(cgo)))
                     files = {"BUILDINFO.json": json.dumps(info).encode(),
@@ -82,6 +105,8 @@ class ArchiveTests(unittest.TestCase):
                     paths.append(path)
             manifest = archive_manifest(directory, "abc", "v7.3.6-un.1", "123")
             self.assertEqual(len(manifest.splitlines()), 14)
+            with patch("release.GO_VERSION", "0.0.0"), self.assertRaisesRegex(ValueError, "provenance"):
+                archive_manifest(directory, "abc", "v7.3.6-un.1", "123")
             for line, path in zip(manifest.splitlines(), sorted(paths)):
                 self.assertEqual(line, f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}")
             for head, tag, run_id in (("wrong", "v7.3.6-un.1", "123"), ("abc", "v7.3.6-un.2", "123"), ("abc", "v7.3.6-un.1", "456")):

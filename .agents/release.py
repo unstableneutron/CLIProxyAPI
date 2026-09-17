@@ -12,6 +12,7 @@ import zipfile
 
 REPO = "unstableneutron/CLIProxyAPI"
 VERSION = r"v[0-9]+\.[0-9]+\.[0-9]+"
+GO_VERSION = (Path(__file__).resolve().parent.parent / ".go-version").read_text().strip()
 
 
 def run(*args):
@@ -88,6 +89,7 @@ def archive_manifest(directory, head, tag, run_id):
                 info = json.load(archive.extractfile("BUILDINFO.json"))
                 digest = hashlib.sha256(archive.extractfile(binary).read()).hexdigest()
         if (info["source"] != head or info["tag"] != tag or info["qualification_run"] != run_id
+                or info["go"] != "go" + GO_VERSION
                 or info["binary_sha256"] != digest
                 or info["settings"]["GOOS"] != system or info["settings"]["GOARCH"] != arch
                 or info["settings"]["CGO_ENABLED"] != cgo):
@@ -147,6 +149,9 @@ def main():
     head, tag = inspect()
     print(f"source={head}\ntag={tag}", flush=True)
     if args.build:
+        if run("go", "env", "GOVERSION") != "go" + GO_VERSION:
+            raise ValueError("local Go toolchain differs from .go-version")
+        run("bash", ".agents/freebsd-sysroot.sh", "--check")
         run("gh", "workflow", "run", "release.yaml", "--repo", REPO, "--ref", "main", "-f", f"tag={tag}")
         return
     if not args.publish:

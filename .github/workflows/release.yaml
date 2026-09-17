@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version-file: .go-version
           cache: true
       - name: Build plugin and portable archives
         shell: bash
@@ -90,7 +90,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version-file: .go-version
           cache: true
       - name: Build GLIBC 2.17 plugin and portable archives
         env:
@@ -108,7 +108,7 @@ jobs:
             -e COMMIT="$commit" \
             -e BUILD_DATE="$build_date" \
             "$MANYLINUX_IMAGE" bash -euo pipefail -c '
-            go_version="$(sed -n "s/^go //p" go.mod)"; archive="go${go_version}.linux-${GOARCH}.tar.gz"
+            go_version="$(cat .go-version)"; archive="go${go_version}.linux-${GOARCH}.tar.gz"
             for attempt in 1 2 3 4 5; do
               if curl -fsSL "https://go.dev/dl/${archive}" -o "/tmp/${archive}"; then break; fi
               [[ "$attempt" -lt 5 ]] || exit 1
@@ -148,7 +148,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version-file: .go-version
           cache: true
       - id: metadata
         run: |
@@ -156,22 +156,22 @@ jobs:
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "build_date=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
       - if: matrix.cgo
-        run: sudo apt-get update && sudo apt-get install -y clang lld wget
+        run: sudo apt-get update && sudo apt-get install -y clang lld
       - if: matrix.cgo
-        uses: go-cross/cgo-actions@d0b8f2f2d67923ce9a42d92a7ef0ed1ebd905f0a
+        name: Build with pinned FreeBSD sysroot
         env:
-          GOFLAGS: -buildvcs=false -trimpath
-        with:
-          dir: .
-          packages: ./cmd/server/
-          targets: ${{ matrix.target }}
-          out-dir: dist/bin
-          output: cli-proxy-api
-          flags: '-ldflags=-s -w'
-          x-flags: |
-            main.Version=${{ steps.metadata.outputs.version }}
-            main.Commit=${{ steps.metadata.outputs.commit }}
-            main.BuildDate=${{ steps.metadata.outputs.build_date }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+          COMMIT: ${{ steps.metadata.outputs.commit }}
+          BUILD_DATE: ${{ steps.metadata.outputs.build_date }}
+        run: |
+          set -euo pipefail
+          sysroot=$(mktemp -d)
+          trap 'rm -rf "$sysroot"' EXIT
+          bash .agents/freebsd-sysroot.sh "$sysroot"
+          mkdir -p dist/bin
+          CGO_ENABLED=1 GOOS=freebsd GOARCH=amd64 \
+            CC="clang --target=x86_64-unknown-freebsd14 --sysroot=$sysroot" CGO_LDFLAGS=-fuse-ld=lld \
+            go build -buildvcs=false -trimpath -ldflags="-s -w -X main.Version=$VERSION -X main.Commit=$COMMIT -X main.BuildDate=$BUILD_DATE" -o dist/bin/cli-proxy-api ./cmd/server/
       - if: ${{ !matrix.cgo }}
         env:
           GOARCH: ${{ matrix.goarch }}

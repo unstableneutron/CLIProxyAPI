@@ -9,6 +9,8 @@ import sys
 
 binary = Path(sys.argv[1])
 metadata = subprocess.check_output(["go", "version", "-m", str(binary)], text=True)
+if metadata.splitlines()[0].split()[-1] != "go" + Path(".go-version").read_text().strip():
+    raise ValueError("release binary toolchain differs from .go-version")
 settings = {}
 for line in metadata.splitlines():
     fields = line.strip().split("\t")
