@@ -18,6 +18,12 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
 
 ## Fork Ship and release boundary
 
+- Keep the fork as a discrete feature set. Prefer upstream implementations when
+  they satisfy the same contract, retaining regression tests that prove parity.
+  Keep changes concise and surgical: place fork-specific helpers in adjacent
+  feature files and touch upstream files only at necessary call sites when that
+  reduces merge overlap. Follow the executor `helps/` boundary below. Do not
+  move code merely to rename it or remove a safeguard without equivalent tests.
 - In `unstableneutron/CLIProxyAPI`, Ship defaults to a normal source push only.
   Merge upstream into published main; never rebase or force-push published history.
   Record origin and upstream commits, run `mise run verify`, commit, then rerun

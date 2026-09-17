@@ -260,11 +260,11 @@ func (h *Host) StartLogin(ctx context.Context, provider string, baseURL string, 
 	if record == nil {
 		return pluginapi.AuthLoginStartResponse{}, false, nil
 	}
-	var loginMetadata map[string]any
+	var startMetadata map[string]any
 	if len(metadata) > 0 {
-		loginMetadata = metadata[0]
+		startMetadata = metadata[0]
 	}
-	return h.callStartLogin(ctx, *record, provider, baseURL, loginMetadata)
+	return h.callStartLogin(ctx, *record, provider, baseURL, startMetadata)
 }
 
 func (h *Host) callStartLogin(ctx context.Context, record capabilityRecord, provider string, baseURL string, metadata map[string]any) (resp pluginapi.AuthLoginStartResponse, handled bool, err error) {

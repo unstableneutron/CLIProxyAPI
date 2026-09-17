@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -219,22 +220,17 @@ func (h *Handler) ServePluginAuthURL(c *gin.Context) bool {
 	return true
 }
 
-func pluginAuthStartMetadata(c *gin.Context) map[string]any {
-	if c == nil {
+func queryValuesToMetadata(values url.Values) map[string]any {
+	if len(values) == 0 {
 		return nil
 	}
-	metadata := make(map[string]any)
-	for _, key := range []string{"login_method", "start_url", "region", "idc_region", "idc_start_url", "scopes"} {
-		if values := c.QueryArray(key); len(values) > 1 {
-			metadata[key] = append([]string(nil), values...)
-			continue
+	metadata := make(map[string]any, len(values))
+	for k, v := range values {
+		if len(v) == 1 {
+			metadata[k] = v[0]
+		} else if len(v) > 1 {
+			metadata[k] = append([]string(nil), v...)
 		}
-		if value := strings.TrimSpace(c.Query(key)); value != "" {
-			metadata[key] = value
-		}
-	}
-	if len(metadata) == 0 {
-		return nil
 	}
 	return metadata
 }
