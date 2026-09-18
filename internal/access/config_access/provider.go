@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -15,6 +16,7 @@ func Register(cfg *sdkconfig.SDKConfig) {
 		sdkaccess.UnregisterProvider(sdkaccess.AccessProviderTypeConfigAPIKey)
 		return
 	}
+	util.RegisterSensitiveHeaders(cfg.ExtraAPIKeyAuthHeaders)
 
 	keys := normalizeKeys(cfg.APIKeys)
 	if len(keys) == 0 {
@@ -24,16 +26,17 @@ func Register(cfg *sdkconfig.SDKConfig) {
 
 	sdkaccess.RegisterProvider(
 		sdkaccess.AccessProviderTypeConfigAPIKey,
-		newProvider(sdkaccess.DefaultAccessProviderName, keys),
+		newProvider(sdkaccess.DefaultAccessProviderName, keys, cfg.ExtraAPIKeyAuthHeaders),
 	)
 }
 
 type provider struct {
-	name string
-	keys map[string]struct{}
+	name         string
+	keys         map[string]struct{}
+	extraHeaders []string
 }
 
-func newProvider(name string, keys []string) *provider {
+func newProvider(name string, keys, extraHeaders []string) *provider {
 	providerName := strings.TrimSpace(name)
 	if providerName == "" {
 		providerName = sdkaccess.DefaultAccessProviderName
@@ -42,7 +45,7 @@ func newProvider(name string, keys []string) *provider {
 	for _, key := range keys {
 		keySet[key] = struct{}{}
 	}
-	return &provider{name: providerName, keys: keySet}
+	return &provider{name: providerName, keys: keySet, extraHeaders: normalizeKeys(extraHeaders)}
 }
 
 func (p *provider) Identifier() string {
@@ -68,21 +71,28 @@ func (p *provider) Authenticate(_ context.Context, r *http.Request) (*sdkaccess.
 		queryKey = r.URL.Query().Get("key")
 		queryAuthToken = r.URL.Query().Get("auth_token")
 	}
-	if authHeader == "" && authHeaderGoogle == "" && authHeaderAnthropic == "" && queryKey == "" && queryAuthToken == "" {
-		return nil, sdkaccess.NewNoCredentialsError()
-	}
+	hasCredentials := authHeader != "" || authHeaderGoogle != "" || authHeaderAnthropic != "" || queryKey != "" || queryAuthToken != ""
 
 	apiKey := extractBearerToken(authHeader)
 
-	candidates := []struct {
+	type credentialCandidate struct {
 		value  string
 		source string
-	}{
+	}
+	candidates := []credentialCandidate{
 		{apiKey, "authorization"},
 		{authHeaderGoogle, "x-goog-api-key"},
 		{authHeaderAnthropic, "x-api-key"},
 		{queryKey, "query-key"},
 		{queryAuthToken, "query-auth-token"},
+	}
+	for _, header := range p.extraHeaders {
+		value := r.Header.Get(header)
+		hasCredentials = hasCredentials || value != ""
+		candidates = append(candidates, credentialCandidate{value, strings.ToLower(header)})
+	}
+	if !hasCredentials {
+		return nil, sdkaccess.NewNoCredentialsError()
 	}
 
 	for _, candidate := range candidates {

@@ -41,6 +41,12 @@ api-keys:
   - "your-api-key-2"
   - "your-api-key-3"
 
+# Optional additional client authentication headers (including WebSocket handshakes).
+# Their raw values must match api-keys. Header names are case-insensitive.
+# Only enable headers you intend to treat as credentials; account IDs are not secrets.
+# extra-api-key-auth-headers:
+#   - ChatGPT-Account-Id
+
 # Enable debug logging
 debug: false
 

@@ -152,9 +152,11 @@ jobs:
           cache: true
       - id: metadata
         run: |
-          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
-          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "build_date=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=${RELEASE_TAG#v}"
+            echo "commit=$(git rev-parse --short HEAD)"
+            echo "build_date=$(git show -s --format=%cI HEAD)"
+          } >> "$GITHUB_OUTPUT"
       - if: matrix.cgo
         run: sudo apt-get update && sudo apt-get install -y clang lld
       - if: matrix.cgo

@@ -4,8 +4,10 @@
 package util
 
 import (
+	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
@@ -13,6 +15,35 @@ import (
 )
 
 const openAICompatibleProviderPrefix = "openai-compatible-"
+
+var extraAPIKeyAuthHeaders sync.Map
+
+// RegisterSensitiveHeaders retains credential header names for the process lifetime.
+// Reloading auth configuration must not expose requests still using the old provider.
+func RegisterSensitiveHeaders(headers []string) {
+	for _, header := range headers {
+		if name := strings.ToLower(strings.TrimSpace(header)); name != "" {
+			extraAPIKeyAuthHeaders.Store(name, struct{}{})
+		}
+	}
+}
+
+func isExtraAPIKeyAuthHeader(name string) bool {
+	_, ok := extraAPIKeyAuthHeaders.Load(strings.ToLower(strings.TrimSpace(name)))
+	return ok
+}
+
+// RedactExtraAPIKeyAuthHeaders masks a logging copy before a later config reload can remove a header.
+// The caller must not pass live request headers.
+func RedactExtraAPIKeyAuthHeaders(headers http.Header) {
+	for name, values := range headers {
+		if isExtraAPIKeyAuthHeader(name) {
+			for i := range values {
+				values[i] = "[REDACTED]"
+			}
+		}
+	}
+}
 
 // OpenAICompatibleProviderKey returns the internal provider key for an OpenAI-compatible provider.
 func OpenAICompatibleProviderKey(name string) string {
@@ -227,6 +258,8 @@ func MaskAuthorizationHeader(value string) string {
 func MaskSensitiveHeaderValue(key, value string) string {
 	lowerKey := strings.ToLower(strings.TrimSpace(key))
 	switch {
+	case isExtraAPIKeyAuthHeader(lowerKey):
+		return "[REDACTED]"
 	case strings.Contains(lowerKey, "authorization"):
 		return MaskAuthorizationHeader(value)
 	case strings.Contains(lowerKey, "api-key"),

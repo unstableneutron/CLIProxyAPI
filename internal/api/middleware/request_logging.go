@@ -326,6 +326,7 @@ func captureRequestInfo(c *gin.Context, captureBody bool) (*RequestInfo, error) 
 	} else {
 		headers = make(map[string][]string)
 	}
+	util.RedactExtraAPIKeyAuthHeaders(headers)
 
 	// Capture request body
 	var body []byte

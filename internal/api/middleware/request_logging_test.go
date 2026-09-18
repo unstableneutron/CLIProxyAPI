@@ -17,7 +17,70 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 )
+
+func TestExtraAPIKeyHeadersAreRedactedInRequestLogs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const credential = "synthetic-client-credential-not-for-logs"
+	for _, tc := range []struct {
+		name    string
+		enabled bool
+		method  string
+		status  int
+	}{
+		{"normal", true, http.MethodPost, http.StatusOK},
+		{"forced error", false, http.MethodPost, http.StatusUnauthorized},
+		{"websocket error", false, http.MethodGet, http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			util.RegisterSensitiveHeaders([]string{" chatgpt-account-id ", "X-Client-Identity"})
+			// A new config must not forget names before old in-flight auth providers finish.
+			util.RegisterSensitiveHeaders(nil)
+			logsDir := t.TempDir()
+			router := gin.New()
+			router.Use(RequestLoggingMiddleware(logging.NewFileRequestLogger(tc.enabled, logsDir, "", 10)))
+			router.Handle(tc.method, "/v1/responses", func(c *gin.Context) {
+				if c.GetHeader("ChatGPT-Account-Id") != credential || c.GetHeader("X-Client-Identity") != "xy" {
+					t.Error("logging changed live request headers")
+				}
+				// Removing the setting mid-request must not expose captured credentials.
+				util.RegisterSensitiveHeaders(nil)
+				c.Status(tc.status)
+			})
+			req := httptest.NewRequest(tc.method, "/v1/responses", nil)
+			req.Header.Set("ChatGPT-Account-Id", credential)
+			req.Header.Set("X-Client-Identity", "xy")
+			if tc.method == http.MethodGet {
+				req.Header.Set("Upgrade", "websocket")
+			}
+			router.ServeHTTP(httptest.NewRecorder(), req)
+			entries, err := os.ReadDir(logsDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, entry := range entries {
+				if !strings.HasSuffix(entry.Name(), ".log") {
+					continue
+				}
+				data, errRead := os.ReadFile(logsDir + string(os.PathSeparator) + entry.Name())
+				if errRead != nil {
+					t.Fatal(errRead)
+				}
+				if bytes.Contains(data, []byte(credential)) || bytes.Contains(data, []byte("X-Client-Identity: xy")) {
+					t.Fatal("credential leaked into request log")
+				}
+				if bytes.Contains(data, []byte("Chatgpt-Account-Id: [REDACTED]")) && bytes.Contains(data, []byte("X-Client-Identity: [REDACTED]")) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("expected redacted request log was not written")
+			}
+		})
+	}
+}
 
 func TestShouldSkipMethodForRequestLogging(t *testing.T) {
 	tests := []struct {
