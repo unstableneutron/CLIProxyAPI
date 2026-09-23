@@ -13,6 +13,10 @@ type Config struct {
 	// Port is the network port on which the API server will listen.
 	Port int `yaml:"port" json:"-"`
 
+	// TrustedProxies lists the IPs or CIDRs allowed to provide forwarded client IP headers.
+	// The server applies this list at startup; changing it requires a restart.
+	TrustedProxies []string `yaml:"trusted-proxies" json:"trusted-proxies"`
+
 	// TLS config controls HTTPS server settings.
 	TLS TLSConfig `yaml:"tls" json:"tls"`
 
@@ -138,6 +142,9 @@ type Config struct {
 	// CodexHeaderDefaults configures fallback headers for Codex OAuth model requests.
 	// These are used only when the client does not send its own headers.
 	CodexHeaderDefaults CodexHeaderDefaults `yaml:"codex-header-defaults" json:"codex-header-defaults"`
+
+	// Claude configures provider-wide Claude request behavior.
+	Claude ClaudeConfig `yaml:"claude" json:"claude"`
 
 	// ClaudeKey defines a list of Claude API key configurations as specified in the YAML configuration file.
 	ClaudeKey []ClaudeKey `yaml:"claude-api-key" json:"claude-api-key"`

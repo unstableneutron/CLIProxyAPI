@@ -113,10 +113,14 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 				emittedEvent := false
 				for _, eventData := range eventDataList {
 					for _, restoredEvent := range namespaceRestorer.restore(eventData) {
+						if prepared.webSearchAlias != "" {
+							restoredEvent = restoreXAIClientWebSearchName(restoredEvent, prepared.webSearchAlias)
+						}
 						restoredEvent = responseFilter.apply(restoredEvent)
 						if len(restoredEvent) == 0 {
 							continue
 						}
+						reporter.ObserveResponseModel(restoredEvent)
 						normalizedEventName := gjson.GetBytes(restoredEvent, "type").String()
 						switch normalizedEventName {
 						case "response.output_item.done":

@@ -678,6 +678,7 @@ func TestCodexExecutor_BootstrapBuffering_ByteCapReleasesStream(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected a stream result once the byte cap released the stream")
 	}
+	drainChunks(result)
 }
 
 // Upstream interleaves keepalive heartbeats and item announcements while the model is still
@@ -1402,10 +1403,11 @@ func TestCodexExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *testing.T)
 	bootstrapStarted := make(chan struct{})
 	var once sync.Once
 	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
 		once.Do(func() {
 			close(bootstrapStarted)
 		})
-		return clock.now()
+		return now
 	})
 	t.Cleanup(cleanup)
 
@@ -1448,6 +1450,17 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	clock := withMockClock(t, t0)
 
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
+
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -1460,6 +1473,7 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_TimeBudgetReleasesStream(t *
 		}
 		_ = conn.WriteMessage(websocket.TextMessage, []byte(codexInProgressEvent))
 
+		<-bootstrapStarted
 		// Advance clock past default 10s timeout
 		clock.advance(11 * time.Second)
 
@@ -1602,10 +1616,11 @@ func TestCodexExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeoutDeliveredI
 	bootstrapStarted := make(chan struct{})
 	var once sync.Once
 	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
 		once.Do(func() {
 			close(bootstrapStarted)
 		})
-		return clock.now()
+		return now
 	})
 	t.Cleanup(cleanup)
 
@@ -1644,6 +1659,17 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeout
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	clock := withMockClock(t, t0)
 
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
+
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -1655,6 +1681,7 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_OverloadDirectlyAfterTimeout
 			return
 		}
 
+		<-bootstrapStarted
 		// Advance clock past 10s timeout before writing any messages
 		clock.advance(11 * time.Second)
 
@@ -1681,6 +1708,17 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_StatusBearingErrorAfterTimeo
 	t0 := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	clock := withMockClock(t, t0)
 
+	bootstrapStarted := make(chan struct{})
+	var once sync.Once
+	cleanup := setCodexBootstrapNowForTest(func() time.Time {
+		now := clock.now()
+		once.Do(func() {
+			close(bootstrapStarted)
+		})
+		return now
+	})
+	t.Cleanup(cleanup)
+
 	statusBearingError := `{"type":"error","status":429,"error":{"message":"Rate limit exceeded","type":"requests","code":"rate_limit_exceeded"}}`
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -1694,6 +1732,7 @@ func TestCodexWebsocketsExecutor_BootstrapBuffering_StatusBearingErrorAfterTimeo
 			return
 		}
 
+		<-bootstrapStarted
 		// Advance clock past 10s timeout before writing error frame
 		clock.advance(11 * time.Second)
 

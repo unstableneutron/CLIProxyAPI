@@ -92,10 +92,14 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 		}
 		eventData := xaiNormalizeReasoningSummaryData(bytes.TrimSpace(line[len(xaiDataTag):]))
 		for _, restoredEvent := range namespaceRestorer.restore(eventData) {
+			if prepared.webSearchAlias != "" {
+				restoredEvent = restoreXAIClientWebSearchName(restoredEvent, prepared.webSearchAlias)
+			}
 			restoredEvent = responseFilter.apply(restoredEvent)
 			if len(restoredEvent) == 0 {
 				continue
 			}
+			reporter.ObserveResponseModel(restoredEvent)
 			eventType := gjson.GetBytes(restoredEvent, "type").String()
 			switch eventType {
 			case "response.output_item.done":
@@ -204,6 +208,7 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 		return nil, nil, nil, err
 	}
 
+	reporter.ObserveResponseModel(data)
 	reporter.Publish(ctx, helps.ParseOpenAIUsage(data))
 	reporter.EnsurePublished(ctx)
 	clearXAIReasoningReplayAfterCompaction(ctx, prepared.replayScope)
