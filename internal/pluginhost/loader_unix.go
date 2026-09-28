@@ -94,10 +94,13 @@ var (
 type dynamicLibraryLoader struct{}
 
 type dynamicLibraryClient struct {
-	handle  unsafe.Pointer
-	hostAPI *C.cliproxy_host_api
-	hostCtx unsafe.Pointer
-	api     C.cliproxy_plugin_api
+	handle   unsafe.Pointer
+	hostAPI  *C.cliproxy_host_api
+	hostCtx  unsafe.Pointer
+	api      C.cliproxy_plugin_api
+	host     *Host
+	pluginID string
+	instance *hostCallbackInstance
 }
 
 func defaultPluginLoader() pluginLoader {
@@ -132,14 +135,19 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 		return nil, fmt.Errorf("allocate host context")
 	}
 	id := hostCallbackID.Add(1)
+	instance := &hostCallbackInstance{}
+	host.registerHostCallbackInstance(file.ID, instance)
 	*(*C.uintptr_t)(hostCtx) = C.uintptr_t(id)
-	hostCallbackEntries.Store(id, dynamicHostCallbackEntry{host: host, pluginID: file.ID})
+	hostCallbackEntries.Store(id, dynamicHostCallbackEntry{host: host, pluginID: file.ID, instance: instance})
 	C.cliproxy_set_host_api(hostAPI, C.uint32_t(pluginHostABIVersion), hostCtx)
 
 	client := &dynamicLibraryClient{
-		handle:  handle,
-		hostAPI: hostAPI,
-		hostCtx: hostCtx,
+		handle:   handle,
+		hostAPI:  hostAPI,
+		hostCtx:  hostCtx,
+		host:     host,
+		pluginID: file.ID,
+		instance: instance,
 	}
 	rc := C.cliproxy_call_init(initSymbol, hostAPI, &client.api)
 	if rc != 0 {
@@ -155,6 +163,13 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 		return nil, fmt.Errorf("plugin function table is incomplete")
 	}
 	return client, nil
+}
+
+func (c *dynamicLibraryClient) callbackInstance() *hostCallbackInstance {
+	if c == nil {
+		return nil
+	}
+	return c.instance
 }
 
 func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request []byte) ([]byte, error) {
@@ -197,6 +212,10 @@ func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request 
 func (c *dynamicLibraryClient) Shutdown() {
 	if c == nil {
 		return
+	}
+	if c.host != nil {
+		c.host.closeHostHTTPCallbackInstance(c.pluginID, c.instance)
+		c.host = nil
 	}
 	if c.api.shutdown != nil {
 		C.cliproxy_shutdown_plugin(c.api.shutdown)

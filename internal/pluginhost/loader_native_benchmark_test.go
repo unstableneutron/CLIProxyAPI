@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"golang.org/x/sys/unix"
 )
 
@@ -22,8 +22,9 @@ func BenchmarkNativeStream(b *testing.B) {
 	client := openNativeFixture(b, host)
 	payload := bytes.Repeat([]byte("data: chunk\n\n"), 8)
 	chunks := make(chan pluginapi.HTTPStreamChunk, 1)
-	id := host.httpStreams.open(chunks, nil)
-	defer host.httpStreams.close(id)
+	instance := pluginCallbackInstance(client)
+	id := host.httpStreams.open("fixture", instance, chunks, nil, nil)
+	defer host.httpStreams.close("fixture", instance, id)
 	req := []byte(fmt.Sprintf(`{"stream_id":%q}`, id))
 	b.SetBytes(int64(len(payload)))
 	b.ReportAllocs()
@@ -61,8 +62,9 @@ func TestNativeStreamLoad(t *testing.T) {
 	for range streams {
 		wg.Go(func() {
 			chunks := make(chan pluginapi.HTTPStreamChunk, 1)
-			id := host.httpStreams.open(chunks, nil)
-			defer host.httpStreams.close(id)
+			instance := pluginCallbackInstance(client)
+			id := host.httpStreams.open("fixture", instance, chunks, nil, nil)
+			defer host.httpStreams.close("fixture", instance, id)
 			req := []byte(fmt.Sprintf(`{"stream_id":%q}`, id))
 			ticker := time.NewTicker(10 * time.Millisecond)
 			defer ticker.Stop()
