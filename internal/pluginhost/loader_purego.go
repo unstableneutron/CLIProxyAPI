@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 )
 
 // These layouts are ABI v1, not Go objects shared with a plugin runtime.
@@ -103,11 +104,12 @@ func (r *nativeLoaderRuntime) release(ptr unsafe.Pointer) {
 type dynamicLibraryLoader struct{}
 
 type dynamicLibraryClient struct {
-	runtime *nativeLoaderRuntime
-	id      uintptr
-	api     nativePluginAPI
-	retired atomic.Bool
-	once    sync.Once
+	runtime  *nativeLoaderRuntime
+	id       uintptr
+	api      nativePluginAPI
+	instance *hostCallbackInstance
+	retired  atomic.Bool
+	once     sync.Once
 }
 
 func defaultPluginLoader() pluginLoader { return dynamicLibraryLoader{} }
@@ -150,7 +152,9 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 	id := uintptr(slot) + 1
 	record := (*nativeRegistration)(unsafe.Add(r.records, uintptr(slot)*unsafe.Sizeof(nativeRegistration{})))
 	record.host = nativeHostAPI{pluginHostABIVersion, id, r.callCallback, r.freeCallback}
-	r.entries.Store(id, dynamicHostCallbackEntry{host: host, pluginID: file.ID})
+	instance := &hostCallbackInstance{}
+	host.registerHostCallbackInstance(file.ID, instance)
+	r.entries.Store(id, dynamicHostCallbackEntry{host: host, pluginID: file.ID, instance: instance})
 	rc, _, _ := purego.SyscallN(init, uintptr(unsafe.Pointer(&record.host)), uintptr(unsafe.Pointer(&record.plugin)))
 	if int32(rc) != 0 {
 		r.entries.Delete(id)
@@ -164,7 +168,14 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 		r.entries.Delete(id)
 		return nil, fmt.Errorf("plugin function table is incomplete")
 	}
-	return &dynamicLibraryClient{runtime: r, id: id, api: record.plugin}, nil
+	return &dynamicLibraryClient{runtime: r, id: id, api: record.plugin, instance: instance}, nil
+}
+
+func (c *dynamicLibraryClient) callbackInstance() *hostCallbackInstance {
+	if c == nil {
+		return nil
+	}
+	return c.instance
 }
 
 func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request []byte) ([]byte, error) {
@@ -267,10 +278,10 @@ func nativeHostCall(id uintptr, method unsafe.Pointer, request unsafe.Pointer, l
 		methodLen++
 	}
 	methodName := string(unsafe.Slice((*byte)(method), methodLen))
-	ctx := withHostCallbackPluginID(context.Background(), entry.pluginID)
+	ctx := withHostCallbackIdentity(context.Background(), entry.pluginID, entry.instance)
 	resp, errCall := entry.host.callFromPlugin(ctx, methodName, req)
 	if errCall != nil {
-		resp = marshalRPCError("host_call_failed", errCall.Error())
+		resp = marshalRPCError("host_call_failed", errCall.Error(), clienterror.HTTPStatusFromError(errCall))
 	}
 	if response == nil || len(resp) == 0 {
 		return 0

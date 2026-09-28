@@ -119,6 +119,28 @@ func TestNativeBuffersAndCallbacks(t *testing.T) {
 	}
 }
 
+func TestNativeCallbackInstanceOwnsHTTPStreams(t *testing.T) {
+	host := New()
+	client := openNativeFixture(t, host)
+	instance := pluginCallbackInstance(client)
+	if instance == nil {
+		t.Fatal("native loader did not expose its callback instance")
+	}
+	chunks := make(chan pluginapi.HTTPStreamChunk, 1)
+	chunks <- pluginapi.HTTPStreamChunk{Payload: []byte("instance-owned")}
+	streamID := host.httpStreams.open("fixture", instance, chunks, nil, nil)
+	defer host.httpStreams.close("fixture", instance, streamID)
+
+	out, errCall := client.Call(context.Background(), pluginabi.MethodHostHTTPStreamRead, []byte(fmt.Sprintf(`{"stream_id":%q}`, streamID)))
+	if errCall != nil {
+		t.Fatal(errCall)
+	}
+	response, errDecode := decodeRPCEnvelope[rpcHostHTTPStreamReadResponse](out)
+	if errDecode != nil || string(response.Payload) != "instance-owned" || response.Done {
+		t.Fatalf("instance-owned stream response: %s, decode error: %v", out, errDecode)
+	}
+}
+
 func TestNativeValidation(t *testing.T) {
 	for define, want := range map[string]string{"BAD_ABI": "ABI version 99", "BAD_TABLE": "table is incomplete", "FAIL_INIT": "returned -3", "NO_INIT": "missing cliproxy_plugin_init"} {
 		t.Run(define, func(t *testing.T) {
