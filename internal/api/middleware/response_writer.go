@@ -179,7 +179,7 @@ func (w *ResponseWriterWrapper) WriteHeader(statusCode int) {
 			w.streamDone = doneChan
 
 			// Start async chunk processor
-			go w.processStreamingChunks(doneChan)
+			go processStreamingChunks(doneChan, streamWriter, w.chunkChannel)
 
 			// Write status immediately
 			_ = streamWriter.WriteStatus(statusCode, w.headers)
@@ -241,19 +241,19 @@ func (w *ResponseWriterWrapper) detectStreaming(contentType string) bool {
 
 // processStreamingChunks runs in a separate goroutine to process response chunks from the chunkChannel.
 // It asynchronously writes each chunk to the streaming log writer.
-func (w *ResponseWriterWrapper) processStreamingChunks(done chan struct{}) {
+func processStreamingChunks(done chan struct{}, streamWriter logging.StreamingLogWriter, chunkChannel <-chan []byte) {
 	if done == nil {
 		return
 	}
 
 	defer close(done)
 
-	if w.streamWriter == nil || w.chunkChannel == nil {
+	if streamWriter == nil || chunkChannel == nil {
 		return
 	}
 
-	for chunk := range w.chunkChannel {
-		w.streamWriter.WriteChunkAsync(chunk)
+	for chunk := range chunkChannel {
+		streamWriter.WriteChunkAsync(chunk)
 	}
 }
 
