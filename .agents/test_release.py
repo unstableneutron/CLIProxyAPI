@@ -10,7 +10,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from release import GO_VERSION, archive_manifest, check_run, inspect, main, next_tag, require_source, run
+from release import GO_VERSION, archive_manifest, check_run, inspect, main, next_snapshot_tag, next_tag, require_source, run
 
 
 class ReleaseTests(unittest.TestCase):
@@ -45,8 +45,19 @@ class ReleaseTests(unittest.TestCase):
     def test_new_base_resets(self):
         self.assertEqual(next_tag(["v7.3.7"], ["v7.3.6-un.10"]), "v7.3.7-un.1")
 
+    def test_develop_snapshot_identifies_exact_upstream_commit(self):
+        commit = "1234567890abcdef1234567890abcdef12345678"
+        self.assertEqual(
+            next_snapshot_tag("v8.0.4", 20, commit, ["v8.0.4-un.1"]),
+            "v8.0.4-dev.20.g1234567890ab-un.1",
+        )
+        self.assertEqual(
+            next_snapshot_tag("v8.0.4", 20, commit, ["v8.0.4-dev.20.g1234567890ab-un.9"]),
+            "v8.0.4-dev.20.g1234567890ab-un.10",
+        )
+
     def test_malformed_tags(self):
-        for suffix in ("0", "01", "-1", "1.2", "", "1-extra"):
+        for suffix in ("0", "01", "-1", "1.2", "", "1-extra", "dev.20.g1234-un.1"):
             with self.subTest(suffix=suffix), self.assertRaises(ValueError):
                 next_tag(["v7.3.6"], ["v7.3.6-un." + suffix])
 
@@ -140,7 +151,7 @@ class RepositoryTests(unittest.TestCase):
         run("git", "tag", "v7.3.6")
         run("git", "remote", "add", "origin", "../origin.git")
         run("git", "remote", "add", "upstream", "../upstream.git")
-        run("git", "push", "upstream", "main", "--tags")
+        run("git", "push", "upstream", "main", "main:dev", "--tags")
         run("git", "commit", "--allow-empty", "-m", "fork")
         run("git", "push", "origin", "main")
         self.head = run("git", "rev-parse", "HEAD")
@@ -180,6 +191,21 @@ class RepositoryTests(unittest.TestCase):
         run("git", "tag", "-f", "v7.3.6-un.1", "HEAD^")
         with self.assertRaisesRegex(ValueError, "tag conflict"):
             inspect()
+
+    def test_develop_snapshot_uses_nearest_release_and_exact_commit(self):
+        run("git", "checkout", "-b", "upstream-dev", "v7.3.6")
+        run("git", "commit", "--allow-empty", "-m", "upstream development")
+        upstream_dev = run("git", "rev-parse", "HEAD")
+        run("git", "push", "upstream", "HEAD:dev")
+        run("git", "checkout", "main")
+        run("git", "merge", "--no-ff", upstream_dev, "-m", "merge upstream dev")
+        run("git", "push", "origin", "main")
+        self.head = run("git", "rev-parse", "HEAD")
+
+        self.assertEqual(
+            inspect(),
+            (self.head, f"v7.3.6-dev.1.g{upstream_dev[:12]}-un.1"),
+        )
 
 
 if __name__ == "__main__":

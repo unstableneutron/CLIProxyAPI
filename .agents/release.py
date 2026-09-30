@@ -12,6 +12,7 @@ import zipfile
 
 REPO = "unstableneutron/CLIProxyAPI"
 VERSION = r"v[0-9]+\.[0-9]+\.[0-9]+"
+SNAPSHOT = rf"({VERSION}-dev\.[1-9][0-9]*\.g[0-9a-f]{{12}})-un\.([1-9][0-9]*)"
 GO_VERSION = (Path(__file__).resolve().parent.parent / ".go-version").read_text().strip()
 
 
@@ -31,11 +32,58 @@ def next_tag(bases, tags):
         if tag in {f"v7.2.94-un.0.1.{n}" for n in range(3)}:
             continue
         match = re.fullmatch(rf"({VERSION})-un\.([1-9][0-9]*)", tag)
-        if not match:
+        if match:
+            if match[1] == base:
+                builds.append(int(match[2]))
+        elif not re.fullmatch(SNAPSHOT, tag):
             raise ValueError(f"malformed fork tag: {tag}")
-        if match[1] == base:
-            builds.append(int(match[2]))
     return f"{base}-un.{max(builds, default=0) + 1}"
+
+
+def next_snapshot_tag(base, distance, commit, tags):
+    if not re.fullmatch(VERSION, base) or distance < 1 or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("invalid upstream dev snapshot")
+    snapshot = f"{base}-dev.{distance}.g{commit[:12]}"
+    builds = []
+    for tag in tags:
+        if "-un" not in tag:
+            continue
+        if tag in {f"v7.2.94-un.0.1.{n}" for n in range(3)}:
+            continue
+        match = re.fullmatch(SNAPSHOT, tag)
+        if match:
+            if match[1] == snapshot:
+                builds.append(int(match[2]))
+        elif not re.fullmatch(rf"({VERSION})-un\.([1-9][0-9]*)", tag):
+            raise ValueError(f"malformed fork tag: {tag}")
+    return f"{snapshot}-un.{max(builds, default=0) + 1}"
+
+
+def is_ancestor(ancestor, descendant):
+    return subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+
+def snapshot_base(target, refs):
+    candidates = []
+    for ref in refs:
+        tag = ref.removeprefix("refs/release-upstream/")
+        if not re.fullmatch(VERSION, tag):
+            continue
+        commit = run("git", "rev-parse", ref + "^{commit}")
+        if is_ancestor(commit, target):
+            candidates.append((int(run("git", "rev-list", "--count", commit + ".." + target)), tag))
+    if not candidates:
+        raise ValueError("upstream dev snapshot must have exactly one nearest stable release tag")
+    distance = min(item[0] for item in candidates)
+    bases = [tag for candidate_distance, tag in candidates if candidate_distance == distance]
+    if len(bases) != 1:
+        raise ValueError("upstream dev snapshot must have exactly one nearest stable release tag")
+    return bases[0], distance
 
 
 def require_source(head, origin, expected=None):
@@ -106,27 +154,37 @@ def inspect(expected=None):
     # Dedicated refs avoid trusting stale/local-only tags or conflating remotes.
     run("git", "fetch", "--prune", "--no-tags", "upstream",
         "+refs/heads/main:refs/remotes/upstream/main",
+        "+refs/heads/dev:refs/remotes/upstream/dev",
         "+refs/tags/*:refs/release-upstream/*")
     run("git", "fetch", "--prune", "--no-tags", "origin",
         "+refs/heads/main:refs/remotes/origin/main",
         "+refs/tags/*:refs/release-origin/*")
     head = run("git", "rev-parse", "HEAD")
     require_source(head, run("git", "rev-parse", "origin/main"), expected)
-    merge_bases = run("git", "merge-base", "--all", "HEAD", "upstream/main").splitlines()
-    if len(merge_bases) != 1:
-        raise ValueError("ambiguous upstream ancestry")
-    bases = []
-    for ref in run("git", "for-each-ref", "--format=%(refname)", "refs/release-upstream/").splitlines():
-        tag = ref.removeprefix("refs/release-upstream/")
-        if re.fullmatch(VERSION, tag) and run("git", "rev-parse", ref + "^{commit}") == merge_bases[0]:
-            bases.append(tag)
+    upstream_refs = run("git", "for-each-ref", "--format=%(refname)", "refs/release-upstream/").splitlines()
     tags = [ref.removeprefix("refs/release-origin/") for ref in
             run("git", "for-each-ref", "--format=%(refname)", "refs/release-origin/").splitlines()]
     for existing in tags:
         if "-un" in existing and run("git", "tag", "--list", existing):
             if run("git", "rev-parse", "refs/tags/" + existing) != run("git", "rev-parse", "refs/release-origin/" + existing):
                 raise ValueError(f"local/origin tag conflict: {existing}")
-    tag = next_tag(bases, tags)
+    upstream_dev = run("git", "rev-parse", "upstream/dev")
+    if is_ancestor(upstream_dev, head):
+        base, distance = snapshot_base(upstream_dev, upstream_refs)
+        if distance:
+            tag = next_snapshot_tag(base, distance, upstream_dev, tags)
+        else:
+            tag = next_tag([base], tags)
+    else:
+        merge_bases = run("git", "merge-base", "--all", "HEAD", "upstream/main").splitlines()
+        if len(merge_bases) != 1:
+            raise ValueError("ambiguous upstream ancestry")
+        bases = []
+        for ref in upstream_refs:
+            tag_name = ref.removeprefix("refs/release-upstream/")
+            if re.fullmatch(VERSION, tag_name) and run("git", "rev-parse", ref + "^{commit}") == merge_bases[0]:
+                bases.append(tag_name)
+        tag = next_tag(bases, tags)
     if run("git", "tag", "--list", tag):
         raise ValueError(f"local tag already exists: {tag}")
     # Listing rather than treating a failed lookup as absence fails closed on API errors.
