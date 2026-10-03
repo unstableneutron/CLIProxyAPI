@@ -403,6 +403,19 @@ func newXAINamespaceRestorer(refs map[string]xaiNamespaceToolRef) *xaiNamespaceR
 	}
 }
 
+func xaiNamespaceResponseRefs(refs map[string]xaiNamespaceToolRef, bridgeOwnsDispatchers bool) map[string]xaiNamespaceToolRef {
+	if !bridgeOwnsDispatchers {
+		return refs
+	}
+	direct := make(map[string]xaiNamespaceToolRef, len(refs))
+	for name, ref := range refs {
+		if !ref.isDispatcher {
+			direct[name] = ref
+		}
+	}
+	return direct
+}
+
 func (r *xaiNamespaceRestorer) restore(data []byte) [][]byte {
 	if len(data) == 0 {
 		return nil
