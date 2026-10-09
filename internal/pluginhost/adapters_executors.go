@@ -418,7 +418,16 @@ func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts cor
 	}
 	originalTranslated := bytes.Clone(originalPayload)
 	if inputRequested != "" && inputRequested != inputFormat {
-		originalTranslated = sdktranslator.TranslateRequest(inputRequested, inputFormat, baseModel, originalPayload, opts.Stream)
+		translated := sdktranslator.TranslateRequestEnvelope(context.Background(), inputRequested, inputFormat, sdktranslator.RequestEnvelope{
+			Format: inputRequested,
+			Model:  baseModel,
+			Stream: opts.Stream,
+			Body:   originalPayload,
+		})
+		if translated.Err != nil {
+			return preparedExecutorCall{}, translated.Err
+		}
+		originalTranslated = translated.Body
 	}
 
 	nativeReq := req
@@ -426,7 +435,16 @@ func (a *executorAdapter) prepareExecutorCall(req coreexecutor.Request, opts cor
 	nativeReq.Model = baseModel
 	nativeReq.Payload = bytes.Clone(req.Payload)
 	if inputRequested != "" && inputRequested != inputFormat {
-		nativeReq.Payload = sdktranslator.TranslateRequest(inputRequested, inputFormat, baseModel, req.Payload, opts.Stream)
+		translated := sdktranslator.TranslateRequestEnvelope(context.Background(), inputRequested, inputFormat, sdktranslator.RequestEnvelope{
+			Format: inputRequested,
+			Model:  baseModel,
+			Stream: opts.Stream,
+			Body:   req.Payload,
+		})
+		if translated.Err != nil {
+			return preparedExecutorCall{}, translated.Err
+		}
+		nativeReq.Payload = translated.Body
 	}
 	var errThinking error
 	nativeReq.Payload, errThinking = helps.ApplyRequestThinking(nativeReq.Payload, req, opts, inputRequested.String(), inputFormat.String(), a.Identifier())
