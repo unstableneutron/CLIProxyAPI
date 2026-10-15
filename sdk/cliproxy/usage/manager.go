@@ -515,14 +515,16 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
 			record.TraceID = trID
 		}
 	}
-	if strings.TrimSpace(record.APIKey) == "" {
-		if key := APIKeyFromContext(ctx); key != "" {
-			record.APIKey = key
+	// Publish can run after the HTTP handler returned and gin recycled its
+	// context, so backfill only from immutable request-context values.
+	if ctx != nil && strings.TrimSpace(record.APIKey) == "" {
+		if key, ok := ctx.Value(apiKeyContextKey{}).(string); ok {
+			record.APIKey = strings.TrimSpace(key)
 		}
 	}
-	if strings.TrimSpace(record.AccessProvider) == "" {
-		if provider := AccessProviderFromContext(ctx); provider != "" {
-			record.AccessProvider = provider
+	if ctx != nil && strings.TrimSpace(record.AccessProvider) == "" {
+		if provider, ok := ctx.Value(accessProviderContextKey{}).(string); ok {
+			record.AccessProvider = strings.TrimSpace(provider)
 		}
 	}
 	if !record.IsNativeKey {
