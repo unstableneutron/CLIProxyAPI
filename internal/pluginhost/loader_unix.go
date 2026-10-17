@@ -95,6 +95,7 @@ type dynamicLibraryLoader struct{}
 
 type dynamicLibraryClient struct {
 	handle   unsafe.Pointer
+	tempPath string
 	hostAPI  *C.cliproxy_host_api
 	hostCtx  unsafe.Pointer
 	api      C.cliproxy_plugin_api
@@ -108,15 +109,23 @@ func defaultPluginLoader() pluginLoader {
 }
 
 func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, error) {
-	cPath := C.CString(file.Path)
+	loadPath, errShadow := shadowCopyPlugin(file)
+	if errShadow != nil {
+		return nil, errShadow
+	}
+	cPath := C.CString(loadPath)
 	defer C.free(unsafe.Pointer(cPath))
 
 	handle := C.cliproxy_dlopen(cPath)
 	if handle == nil {
+		removeShadowPlugin(loadPath)
 		return nil, fmt.Errorf("dlopen %s: %s", file.Path, dlerrorString())
 	}
-	// A Go c-shared image can start runtime threads during dlopen, before init.
-	// Keep every opened image mapped until process exit, including init failures.
+	// From here on the image must never be unloaded: dlopen may already
+	// have started the plugin runtime, and a Go c-shared runtime cannot be
+	// removed from the host process safely. Failure paths below only detach
+	// the client logically and deliberately leak the mapped image together
+	// with any host callback state the runtime may reference.
 
 	cSymbol := C.CString("cliproxy_plugin_init")
 	initSymbol := C.cliproxy_dlsym(handle, cSymbol)
@@ -131,7 +140,6 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 	}
 	hostCtx := C.malloc(C.size_t(unsafe.Sizeof(C.uintptr_t(0))))
 	if hostCtx == nil {
-		C.free(unsafe.Pointer(hostAPI))
 		return nil, fmt.Errorf("allocate host context")
 	}
 	id := hostCallbackID.Add(1)
@@ -143,6 +151,7 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 
 	client := &dynamicLibraryClient{
 		handle:   handle,
+		tempPath: loadPath,
 		hostAPI:  hostAPI,
 		hostCtx:  hostCtx,
 		host:     host,
@@ -151,15 +160,15 @@ func (dynamicLibraryLoader) Open(file pluginFile, host *Host) (pluginClient, err
 	}
 	rc := C.cliproxy_call_init(initSymbol, hostAPI, &client.api)
 	if rc != 0 {
-		client.Shutdown()
+		client.closeAfterOpenFailure()
 		return nil, fmt.Errorf("cliproxy_plugin_init returned %d", int(rc))
 	}
 	if uint32(client.api.abi_version) != pluginHostABIVersion {
-		client.Shutdown()
+		client.closeAfterOpenFailure()
 		return nil, fmt.Errorf("plugin ABI version %d is not supported", uint32(client.api.abi_version))
 	}
 	if client.api.call == nil || client.api.free_buffer == nil {
-		client.Shutdown()
+		client.closeAfterOpenFailure()
 		return nil, fmt.Errorf("plugin function table is incomplete")
 	}
 	return client, nil
@@ -210,6 +219,22 @@ func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request 
 }
 
 func (c *dynamicLibraryClient) Shutdown() {
+	c.close()
+}
+
+func (c *dynamicLibraryClient) closeAfterOpenFailure() {
+	c.close()
+}
+
+// close detaches the client logically without unloading the plugin image.
+// Go plugin libraries are not safe to hot-unload from the host process: the
+// plugin runtime, its threads and its signal handlers stay resident after
+// dlclose, so a later load in the same process forwards signals into
+// unmapped memory and spins. This also applies when initialization failed,
+// because dlopen may already have started the runtime. The plugin was
+// loaded from a shadow copy, so keeping the image mapped does not block
+// deleting or replacing the source artifact.
+func (c *dynamicLibraryClient) close() {
 	if c == nil {
 		return
 	}
@@ -221,18 +246,17 @@ func (c *dynamicLibraryClient) Shutdown() {
 		C.cliproxy_shutdown_plugin(c.api.shutdown)
 		c.api.shutdown = nil
 	}
+	c.api.call = nil
+	c.api.free_buffer = nil
 	if c.hostCtx != nil {
+		// Drop the callback registration so repeated reloads do not pin the
+		// host forever. The C host context and host API block themselves are
+		// deliberately leaked: the resident plugin runtime may still pass
+		// the context back into cliproxyHostCall, which reads the callback
+		// id from it before failing the lookup.
 		id := uintptr(*(*C.uintptr_t)(c.hostCtx))
 		hostCallbackEntries.Delete(id)
-		C.free(c.hostCtx)
-		c.hostCtx = nil
 	}
-	if c.hostAPI != nil {
-		C.free(unsafe.Pointer(c.hostAPI))
-		c.hostAPI = nil
-	}
-	// Draining plugin work does not stop a Go shared library's runtime threads.
-	// Like the Windows and purego loaders, retain its mapping until process exit.
 }
 
 func dlerrorString() string {
