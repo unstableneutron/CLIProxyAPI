@@ -100,7 +100,6 @@ func (s *ConfigSynthesizer) synthesizeInteractionsKeys(ctx *SynthesisContext) []
 }
 
 func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, entries []config.GeminiKey, idKind, sourceName, label, provider string) []*coreauth.Auth {
-	cfg := ctx.Config
 	now := ctx.Now
 	idGen := ctx.IDGenerator
 
@@ -151,7 +150,7 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeyEntries(ctx *SynthesisContext, en
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -222,7 +221,7 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
+		ApplyAuthExcludedModelsMeta(a, ck.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -247,7 +246,6 @@ func (s *ConfigSynthesizer) synthesizeMetaKeys(ctx *SynthesisContext) []*coreaut
 }
 
 func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entries []config.CodexKey, provider string) []*coreauth.Auth {
-	cfg := ctx.Config
 	now := ctx.Now
 	idGen := ctx.IDGenerator
 
@@ -307,7 +305,7 @@ func (s *ConfigSynthesizer) synthesizeCodexStyleKeys(ctx *SynthesisContext, entr
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
+		ApplyAuthExcludedModelsMeta(a, entry.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
@@ -485,7 +483,7 @@ func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*cor
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		ApplyAuthExcludedModelsMeta(a, cfg, compat.ExcludedModels, "apikey")
+		ApplyAuthExcludedModelsMeta(a, compat.ExcludedModels, "apikey")
 		if len(a.Metadata) == 0 {
 			a.Metadata = nil
 		}
