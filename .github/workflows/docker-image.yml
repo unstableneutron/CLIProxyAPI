@@ -66,10 +66,13 @@ jobs:
           name: digest-${{ matrix.scope }}
           path: digests/*
           if-no-files-found: error
-          retention-days: 1
+          # Re-running a failed platform reuses the other platform's digest.
+          retention-days: 7
 
   manifest:
-    if: ${{ github.event_name == 'push' }}
+    # A failed platform must not block publishing the platforms that built;
+    # the tag is then explicitly partial and is not promoted to latest.
+    if: ${{ always() && github.event_name == 'push' }}
     runs-on: ubuntu-latest
     needs: build
     steps:
@@ -77,7 +80,6 @@ jobs:
         with:
           path: digests
           pattern: digest-*
-          merge-multiple: true
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -87,13 +89,35 @@ jobs:
       - name: Create and verify tagged manifest
         run: |
           set -euo pipefail
-          mapfile -t files < <(find digests -type f | sort)
-          [[ ${#files[@]} -eq 2 ]] || { echo "expected two digests" >&2; exit 1; }
-          refs=(); for file in "${files[@]}"; do refs+=("${IMAGE}@sha256:${file##*/}"); done
+          shopt -s nullglob
+          refs=(); platforms=(); missing=()
+          for scope in amd64 arm64; do
+            files=(digests/digest-"$scope"/*)
+            if [[ ${#files[@]} -eq 1 ]]; then
+              refs+=("${IMAGE}@sha256:${files[0]##*/}"); platforms+=("linux/$scope")
+            else
+              missing+=("linux/$scope")
+            fi
+          done
+          [[ ${#refs[@]} -gt 0 ]] || { echo "no platform image was built" >&2; exit 1; }
+          # A late re-run must never drop a platform that the tag already serves.
+          # Lookup errors other than a missing tag fail closed.
+          if existing="$(docker buildx imagetools inspect --raw "${IMAGE}:${GITHUB_REF_NAME}" 2>inspect.err)"; then
+            existing_platforms="$(jq -er '[.manifests[] | select(.platform.os == "linux") | "\(.platform.os)/\(.platform.architecture)"] | join(" ")' <<<"$existing")"
+            for platform in $existing_platforms; do
+              [[ " ${platforms[*]} " == *" $platform "* ]] || { echo "refusing to drop $platform from ${GITHUB_REF_NAME}" >&2; exit 1; }
+            done
+          elif ! grep -qi 'not found' inspect.err; then
+            cat inspect.err >&2; exit 1
+          fi
           docker buildx imagetools create --tag "${IMAGE}:${GITHUB_REF_NAME}" "${refs[@]}"
           result="$(docker buildx imagetools inspect "${IMAGE}:${GITHUB_REF_NAME}")"
-          grep -q 'Platform:.*linux/amd64' <<<"$result"
-          grep -q 'Platform:.*linux/arm64' <<<"$result"
+          for platform in "${platforms[@]}"; do grep -q "Platform:.*$platform" <<<"$result"; done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Partial image ${GITHUB_REF_NAME}: published ${platforms[*]}; pending ${missing[*]}"
+            echo "Partial image: published ${platforms[*]}; pending ${missing[*]} (re-run failed jobs to complete)." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
   promote-latest:
     runs-on: ubuntu-latest
@@ -114,4 +138,8 @@ jobs:
       - name: Promote release to latest
         run: |
           set -euo pipefail
-          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}:${SOURCE_TAG}"
+          # Resolve once and promote the verified immutable digest; partial images never become latest.
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${SOURCE_TAG}" --format '{{json .Manifest}}' | jq -er .digest)"
+          platforms="$(docker buildx imagetools inspect --raw "${IMAGE}@${digest}" | jq -er '[.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort | join(",")')"
+          [[ "$platforms" == amd64,arm64 ]] || { echo "refusing to promote partial image ${SOURCE_TAG} ($platforms)" >&2; exit 1; }
+          docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}@${digest}"

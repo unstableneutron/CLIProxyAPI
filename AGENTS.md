@@ -46,7 +46,15 @@ go build -o test-output ./cmd/server && rm test-output # Verify compile (REQUIRE
   and qualify the exact platform/loader artifacts before tagging. Record tests,
   smoke, ABI/schema requirements and platform limitations; BUILDINFO records
   source/toolchain/target metadata. Set `QUALIFIED_RUN=<run-id>` and
-  `QUALIFIED_DIR=<directory-with-only-the-14-archives>` for release:publish.
+  `QUALIFIED_DIR=<directory-with-only-the-selected-archives>` for release:publish.
+  Unset `QUALIFIED_TARGETS` requires all 8 build targets (14 archives). A
+  deployment may set it to the qualified subset (for example `linux-amd64`)
+  so unrelated OS/arch failures do not block it; the tag then records
+  `Pending-Targets`, the release is titled partial and only qualified archives
+  are published. Qualify pending targets later with `release:build-pending`
+  and `release:complete` against the same tag; never call a partial release
+  fully qualified. The FreeBSD sysroot is cached and every use must match the
+  pinned checksum; never change the pin to work around availability.
   The tag binds the run and checksums; Actions publishes those same archives,
   then downloads and compares them. Independently verify downloads and smoke
   applicable Linux binaries with published plugins; do not claim unsupported

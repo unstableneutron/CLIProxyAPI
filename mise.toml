@@ -102,3 +102,14 @@ description = "Verify QUALIFIED_DIR archives from QUALIFIED_RUN and push the com
 confirm = { message = "Publish the qualified release tag, triggering archives and GHCR?", default = "no" }
 usage = 'arg "<tag>" help="Exact tag printed by release:plan"'
 run = 'python3 -B .agents/release.py --publish "${usage_tag?}"'
+
+[tasks."release:build-pending"]
+description = "Dispatch the CI artifact matrix at a partial release tag to qualify its pending targets"
+usage = 'arg "<tag>" help="Published partial release tag"'
+run = 'python3 -B .agents/release.py --build-pending "${usage_tag?}"'
+
+[tasks."release:complete"]
+description = "Verify QUALIFIED_DIR pending-target archives from QUALIFIED_RUN and dispatch their publication"
+confirm = { message = "Publish the qualified pending targets to the existing release?", default = "no" }
+usage = 'arg "<tag>" help="Published partial release tag"'
+run = 'python3 -B .agents/release.py --complete "${usage_tag?}"'

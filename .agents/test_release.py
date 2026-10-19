@@ -10,22 +10,30 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from release import GO_VERSION, archive_manifest, check_run, inspect, main, next_snapshot_tag, next_tag, require_source, run
+from release import GO_VERSION, TARGETS, archive_manifest, check_run, inspect, main, next_snapshot_tag, next_tag, parse_targets, published_tag, release_status, require_source, run, tag_message, target_archives
 
 
 class ReleaseTests(unittest.TestCase):
-    def test_dispatch_rejects_wrong_toolchain_or_unavailable_sysroot(self):
-        for version, error in (("go0.0.0", ValueError), ("go" + GO_VERSION, subprocess.CalledProcessError)):
+    def test_dispatch_rejects_wrong_toolchain_but_not_unavailable_sysroot(self):
+        for version, dispatched in (("go0.0.0", False), ("go" + GO_VERSION, True)):
+            calls = []
+
             def fake_run(*args):
+                calls.append(args[0])
                 if args[0] == "go":
                     return version
                 if args[0] == "bash":
                     raise subprocess.CalledProcessError(22, args)
-                self.fail("dispatch must not run with failed preflight")
+                return ""
 
             with patch("release.inspect", return_value=("abc", "v7.3.6-un.1")), patch("release.run", side_effect=fake_run), patch("sys.argv", ["release.py", "--build"]):
-                with self.assertRaises(error):
+                if dispatched:
                     main()
+                else:
+                    with self.assertRaises(ValueError):
+                        main()
+            # Only freebsd-amd64 needs the sysroot, so its absence must not block other targets.
+            self.assertEqual("gh" in calls, dispatched)
 
     def test_workflow_and_mise_use_canonical_go_version(self):
         root = Path(__file__).resolve().parent.parent
@@ -72,15 +80,41 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 require_source(*args)
 
-    def test_qualification_requires_exact_successful_dispatch(self):
+    def test_qualification_requires_exact_dispatch_and_selected_jobs(self):
         valid = dict(head_sha="abc", event="workflow_dispatch", path=".github/workflows/release.yaml",
-                     conclusion="success", status="completed", display_title="qualify v7.3.6-un.1")
-        with patch("release.run", return_value=json.dumps(valid)):
-            check_run("123", "abc", "v7.3.6-un.1")
-        for field in valid:
-            with self.subTest(field=field), patch("release.run", return_value=json.dumps({**valid, field: "wrong"})):
+                     conclusion="failure", status="completed", display_title="qualify v7.3.6-un.1")
+        jobs = {"jobs": [{"name": f"build {target}", "conclusion": "failure" if target.startswith("freebsd") else "success"}
+                         for target in TARGETS]}
+
+        def api(data):
+            return lambda *args: json.dumps(jobs if args[-1].endswith("/jobs?per_page=100") else data)
+
+        with patch("release.run", side_effect=api(valid)):
+            check_run("123", "abc", "v7.3.6-un.1", ["linux-amd64", "darwin-arm64"])
+            for targets in (list(TARGETS), ["linux-amd64", "freebsd-amd64"]):
+                with self.subTest(targets=targets), self.assertRaisesRegex(ValueError, "freebsd"):
+                    check_run("123", "abc", "v7.3.6-un.1", targets)
+        for field in ("head_sha", "event", "path", "status", "display_title"):
+            with self.subTest(field=field), patch("release.run", side_effect=api({**valid, field: "wrong"})):
                 with self.assertRaises(ValueError):
-                    check_run("123", "abc", "v7.3.6-un.1")
+                    check_run("123", "abc", "v7.3.6-un.1", ["linux-amd64"])
+        jobs["jobs"] = [job for job in jobs["jobs"] if job["name"] != "build linux-amd64"]
+        with patch("release.run", side_effect=api(valid)), self.assertRaisesRegex(ValueError, "linux-amd64"):
+            check_run("123", "abc", "v7.3.6-un.1", ["linux-amd64"])
+
+    def test_targets_and_partial_tag_message(self):
+        self.assertEqual(parse_targets(""), list(TARGETS))
+        self.assertEqual(parse_targets(" linux-arm64,linux-amd64 "), ["linux-amd64", "linux-arm64"])
+        for value in ("linux-amd64,linux-amd64", "linux-riscv64"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_targets(value)
+        full = tag_message("v7.3.6-un.1", "123", "f" * 64, list(TARGETS))
+        self.assertIn("Qualified-Targets: " + ",".join(TARGETS), full)
+        self.assertNotIn("Pending-Targets", full)
+        partial = tag_message("v7.3.6-un.1", "123", "f" * 64, ["linux-amd64"])
+        self.assertIn("\nQualified-Targets: linux-amd64\n", partial)
+        self.assertTrue(partial.endswith("\nPending-Targets: darwin-amd64,darwin-arm64,windows-amd64,windows-arm64,"
+                                         "linux-arm64,freebsd-amd64,freebsd-arm64-no-plugin"))
 
 
 class ArchiveTests(unittest.TestCase):
@@ -127,6 +161,14 @@ class ArchiveTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "exactly"):
                 archive_manifest(directory, "abc", "v7.3.6-un.1", "123")
             Path(directory, "unexpected").unlink()
+            with self.assertRaisesRegex(ValueError, "exactly"):
+                archive_manifest(directory, "abc", "v7.3.6-un.1", "123", ["linux-amd64"])
+            with tempfile.TemporaryDirectory() as partial:
+                linux = [path for path in paths if "_linux_amd64" in path.name]
+                for path in linux:
+                    Path(partial, path.name).write_bytes(path.read_bytes())
+                subset = archive_manifest(partial, "abc", "v7.3.6-un.1", "123", ["linux-amd64"])
+                self.assertEqual(subset, "".join(line + "\n" for line in manifest.splitlines() if "_linux_amd64" in line))
             paths[0].unlink()
             with self.assertRaisesRegex(ValueError, "exactly"):
                 archive_manifest(directory, "abc", "v7.3.6-un.1", "123")
@@ -191,6 +233,31 @@ class RepositoryTests(unittest.TestCase):
         run("git", "tag", "-f", "v7.3.6-un.1", "HEAD^")
         with self.assertRaisesRegex(ValueError, "tag conflict"):
             inspect()
+
+    def test_published_tag_reports_only_unpublished_pending_targets(self):
+        tag = "v7.3.6-un.1"
+        run("git", "tag", "-a", tag, "-m", tag_message(tag, "123", "f" * 64, ["linux-amd64"]))
+        run("git", "push", "origin", "refs/tags/" + tag)
+        # linux-arm64 was completed later; a lone darwin-amd64 archive (an interrupted
+        # completion) and uploaded-but-unlisted freebsd archives leave those targets pending.
+        listed = [f"CLIProxyAPI_7.3.6-un.1_linux_{arch}{suffix}.tar.gz"
+                  for arch in ("amd64", "aarch64") for suffix in ("", "_no-plugin")]
+        listed.append("CLIProxyAPI_7.3.6-un.1_darwin_amd64.tar.gz")
+        checksums = "".join(f"{'0' * 64}  {name}\n" for name in listed)
+        with patch("release.run", side_effect=lambda *args: checksums if args[0] == "gh" else run(*args)):
+            commit, pending = published_tag(tag)
+        self.assertEqual(commit, self.head)
+        self.assertEqual(pending, [t for t in TARGETS if t not in ("linux-amd64", "linux-arm64")])
+        done, remaining, status = release_status(tag, listed)
+        self.assertEqual((done, remaining), (["linux-amd64", "linux-arm64"], pending))
+        self.assertTrue(status.startswith("Qualification: PARTIAL."))
+        every = [name for target in TARGETS for name, _ in target_archives(tag, target)]
+        self.assertEqual(len(every), 14)
+        self.assertTrue(release_status(tag, every)[2].startswith("Qualification: complete"))
+        # 13 of 14 archives is still partial: the target missing one archive stays pending.
+        _, remaining, status = release_status(tag, every[:-1])
+        self.assertEqual(remaining, ["freebsd-arm64-no-plugin"])
+        self.assertTrue(status.startswith("Qualification: PARTIAL."))
 
     def test_develop_snapshot_uses_nearest_release_and_exact_commit(self):
         run("git", "checkout", "-b", "upstream-dev", "v7.3.6")

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tarfile
 import zipfile
 
@@ -14,6 +15,17 @@ REPO = "unstableneutron/CLIProxyAPI"
 VERSION = r"v[0-9]+\.[0-9]+\.[0-9]+"
 SNAPSHOT = rf"({VERSION}-dev\.[1-9][0-9]*\.g[0-9a-f]{{12}})-un\.([1-9][0-9]*)"
 GO_VERSION = (Path(__file__).resolve().parent.parent / ".go-version").read_text().strip()
+# Qualification job target -> (GOOS, GOARCH, CGO modes). Each job publishes its archives.
+TARGETS = {
+    "darwin-amd64": ("darwin", "amd64", (0, 1)),
+    "darwin-arm64": ("darwin", "arm64", (0, 1)),
+    "windows-amd64": ("windows", "amd64", (0, 1)),
+    "windows-arm64": ("windows", "arm64", (0, 1)),
+    "linux-amd64": ("linux", "amd64", (0, 1)),
+    "linux-arm64": ("linux", "arm64", (0, 1)),
+    "freebsd-amd64": ("freebsd", "amd64", (1,)),
+    "freebsd-arm64-no-plugin": ("freebsd", "arm64", (0,)),
+}
 
 
 def run(*args):
@@ -91,31 +103,50 @@ def require_source(head, origin, expected=None):
         raise ValueError("source is unpushed or origin/source moved")
 
 
-def check_run(run_id, head, tag):
+def parse_targets(value):
+    """Return known targets in canonical order; empty means the full matrix."""
+    names = [name.strip() for name in (value or "").split(",") if name.strip()]
+    if not names:
+        return list(TARGETS)
+    if len(set(names)) != len(names) or not set(names) <= TARGETS.keys():
+        raise ValueError(f"invalid qualification targets: {value}")
+    return [name for name in TARGETS if name in names]
+
+
+def check_run(run_id, head, tag, targets):
+    """Require an exact dispatch whose selected target jobs all succeeded.
+
+    Other targets may fail without blocking; they stay pending and unpublished.
+    """
     if not re.fullmatch(r"[1-9][0-9]*", run_id):
         raise ValueError("invalid qualification run ID")
     data = json.loads(run("gh", "api", f"repos/{REPO}/actions/runs/{run_id}"))
     if (data["head_sha"] != head or data["event"] != "workflow_dispatch"
             or data["path"] != ".github/workflows/release.yaml"
-            or data["conclusion"] != "success" or data["status"] != "completed"
+            or data["status"] != "completed"
             or data["display_title"] != f"qualify {tag}"):
-        raise ValueError("qualification run must succeed for the exact source and tag")
+        raise ValueError("qualification run must complete for the exact source and tag")
+    jobs = json.loads(run("gh", "api", f"repos/{REPO}/actions/runs/{run_id}/jobs?per_page=100"))["jobs"]
+    conclusions = {job["name"]: job["conclusion"] for job in jobs}
+    failed = [target for target in targets if conclusions.get(f"build {target}") != "success"]
+    if failed:
+        raise ValueError(f"qualification targets did not succeed: {', '.join(failed)}")
 
 
-def archive_manifest(directory, head, tag, run_id):
-    expected = {}
-    for system in ("darwin", "windows", "linux", "freebsd"):
-        for arch, asset_arch in (("amd64", "amd64"), ("arm64", "aarch64")):
-            for cgo in (0, 1):
-                if system == "freebsd" and (arch == "amd64") != bool(cgo):
-                    continue
-                extension = "zip" if system == "windows" else "tar.gz"
-                suffix = "" if cgo else "_no-plugin"
-                name = f"CLIProxyAPI_{tag[1:]}_{system}_{asset_arch}{suffix}.{extension}"
-                expected[name] = (system, arch, str(cgo))
+def target_archives(tag, target):
+    system, arch, cgos = TARGETS[target]
+    for cgo in cgos:
+        extension = "zip" if system == "windows" else "tar.gz"
+        suffix = "" if cgo else "_no-plugin"
+        asset_arch = "aarch64" if arch == "arm64" else arch
+        yield f"CLIProxyAPI_{tag[1:]}_{system}_{asset_arch}{suffix}.{extension}", (system, arch, str(cgo))
+
+
+def archive_manifest(directory, head, tag, run_id, targets=tuple(TARGETS)):
+    expected = dict(item for target in targets for item in target_archives(tag, target))
     paths = {p.name: p for p in Path(directory).iterdir() if p.is_file()}
     if set(paths) != set(expected):
-        raise ValueError("qualification directory must contain exactly the 14 release archives")
+        raise ValueError("qualification directory must contain exactly the selected targets' release archives")
     manifest = []
     for name in sorted(expected):
         path = paths[name]
@@ -194,22 +225,92 @@ def inspect(expected=None):
     return head, tag
 
 
+def tag_message(tag, run_id, manifest_hash, targets):
+    pending = [target for target in TARGETS if target not in targets]
+    lines = [f"Release {tag}", "", f"Qualified-Run: {run_id}", f"Qualified-Checksums: {manifest_hash}",
+             f"Qualified-Targets: {','.join(targets)}"]
+    if pending:
+        lines.append(f"Pending-Targets: {','.join(pending)}")
+    return "\n".join(lines)
+
+
+def release_status(tag, names):
+    """Describe qualification from the exact archive names listed in checksums.txt."""
+    names = set(names)
+    done = [target for target in TARGETS if all(name in names for name, _ in target_archives(tag, target))]
+    pending = [target for target in TARGETS if target not in done]
+    if not pending:
+        return done, pending, f"Qualification: complete for all targets ({','.join(done)})."
+    return done, pending, (f"Qualification: PARTIAL. Qualified and published targets: {','.join(done)}. "
+                           f"Pending targets, not qualified and not published: {','.join(pending)}.")
+
+
+def published_tag(tag):
+    """Return the origin tag's commit and its pending targets absent from checksums.txt."""
+    run("git", "fetch", "--prune", "--no-tags", "origin", "+refs/tags/*:refs/release-origin/*")
+    ref = "refs/release-origin/" + tag
+    commit = run("git", "rev-parse", ref + "^{commit}")
+    fields = dict(line.split(": ", 1) for line in
+                  run("git", "for-each-ref", "--format=%(contents)", ref).splitlines() if ": " in line)
+    pending = parse_targets(fields["Pending-Targets"]) if fields.get("Pending-Targets") else []
+    # checksums.txt is replaced last, so a target is published only once it is listed there.
+    listed = [line.split()[-1] for line in run("gh", "release", "download", tag, "--repo", REPO,
+                                               "--pattern", "checksums.txt", "--output", "-").splitlines()]
+    return commit, [target for target in pending if target in release_status(tag, listed)[1]]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--publish", metavar="EXPECTED_TAG")
     parser.add_argument("--build", action="store_true")
+    parser.add_argument("--build-pending", metavar="TAG")
+    parser.add_argument("--complete", metavar="TAG")
     parser.add_argument("--check-run")
     parser.add_argument("--expected-tag")
+    parser.add_argument("--archives", metavar="DIR")
+    parser.add_argument("--status", metavar="TAG", help="print qualification status for checksums.txt on stdin")
     args = parser.parse_args()
+    if args.status:
+        print(release_status(args.status, [line.split()[-1] for line in sys.stdin if line.strip()])[2])
+        return
+    # Unset QUALIFIED_TARGETS selects the full matrix; a subset publishes a
+    # partial release whose remaining targets stay explicitly pending.
+    targets = parse_targets(os.environ.get("QUALIFIED_TARGETS"))
     if args.check_run:
-        check_run(args.check_run, run("git", "rev-parse", "HEAD"), args.expected_tag)
+        head = run("git", "rev-parse", "HEAD")
+        check_run(args.check_run, head, args.expected_tag, targets)
+        if args.archives:
+            print(archive_manifest(args.archives, head, args.expected_tag, args.check_run, targets), end="")
+        return
+    if args.build_pending or args.complete:
+        tag = args.build_pending or args.complete
+        commit, pending = published_tag(tag)
+        if not pending:
+            raise ValueError(f"{tag} has no pending targets")
+        if args.build_pending:
+            run("gh", "workflow", "run", "release.yaml", "--repo", REPO, "--ref", tag, "-f", f"tag={tag}")
+            print(f"source={commit}\ntag={tag}\npending={','.join(pending)}")
+            return
+        if not os.environ.get("QUALIFIED_TARGETS") or not set(targets) <= set(pending):
+            raise ValueError(f"QUALIFIED_TARGETS must name pending targets: {','.join(pending)}")
+        run_id = os.environ["QUALIFIED_RUN"]
+        check_run(run_id, commit, tag, targets)
+        manifest = archive_manifest(os.environ["QUALIFIED_DIR"], commit, tag, run_id, targets)
+        manifest_hash = hashlib.sha256(manifest.encode()).hexdigest()
+        run("gh", "workflow", "run", "release.yaml", "--repo", REPO, "--ref", tag, "-f", f"tag={tag}",
+            "-f", f"complete_run={run_id}", "-f", f"targets={','.join(targets)}", "-f", f"checksums={manifest_hash}")
+        print(f"source={commit}\ntag={tag}\ncompleting={','.join(targets)}\nchecksums={manifest_hash}")
         return
     head, tag = inspect()
     print(f"source={head}\ntag={tag}", flush=True)
     if args.build:
         if run("go", "env", "GOVERSION") != "go" + GO_VERSION:
             raise ValueError("local Go toolchain differs from .go-version")
-        run("bash", ".agents/freebsd-sysroot.sh", "--check")
+        try:
+            run("bash", ".agents/freebsd-sysroot.sh", "--check")
+        except subprocess.CalledProcessError:
+            # CI verifies the same pinned input independently; only freebsd-amd64 depends on it.
+            print("warning: pinned FreeBSD sysroot unavailable locally; freebsd-amd64 may stay pending", flush=True)
         run("gh", "workflow", "run", "release.yaml", "--repo", REPO, "--ref", "main", "-f", f"tag={tag}")
         return
     if not args.publish:
@@ -217,13 +318,12 @@ def main():
     if args.publish != tag:
         raise ValueError("requested tag differs from computed tag")
     run_id = os.environ["QUALIFIED_RUN"]
-    check_run(run_id, head, tag)
-    manifest = archive_manifest(os.environ["QUALIFIED_DIR"], head, tag, run_id)
+    check_run(run_id, head, tag, targets)
+    manifest = archive_manifest(os.environ["QUALIFIED_DIR"], head, tag, run_id, targets)
     subprocess.run(["mise", "run", "verify"], check=True)
     if inspect(expected=head) != (head, tag):
         raise ValueError("release plan changed during verification")
-    manifest_hash = hashlib.sha256(manifest.encode()).hexdigest()
-    message = f"Release {tag}\n\nQualified-Run: {run_id}\nQualified-Checksums: {manifest_hash}"
+    message = tag_message(tag, run_id, hashlib.sha256(manifest.encode()).hexdigest(), targets)
     subprocess.run(["git", "tag", "-a", tag, "-m", message], check=True)
     # Atomic update plus an ordinary (non-force) push. Preserve a local tag on
     # failure: a transport error does not prove that the remote rejected it.

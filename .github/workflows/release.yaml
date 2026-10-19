@@ -1,5 +1,5 @@
 name: release
-run-name: ${{ github.event_name == 'workflow_dispatch' && format('qualify {0}', inputs.tag) || github.ref_name }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('{0} {1}', inputs.complete_run && 'complete' || 'qualify', inputs.tag) || github.ref_name }}
 
 on:
   workflow_dispatch:
@@ -7,6 +7,18 @@ on:
       tag:
         description: Exact tag from mise release:plan (build only)
         required: true
+        type: string
+      complete_run:
+        description: Qualification run whose pending targets to publish (release:complete only)
+        required: false
+        type: string
+      targets:
+        description: Comma-separated pending targets to publish (release:complete only)
+        required: false
+        type: string
+      checksums:
+        description: SHA-256 of the locally qualified pending-target manifest (release:complete only)
+        required: false
         type: string
   push:
     tags:
@@ -25,7 +37,7 @@ concurrency:
 
 jobs:
   build-hosted:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && !inputs.complete_run
     name: build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -77,7 +89,7 @@ jobs:
           retention-days: 1
 
   build-linux:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && !inputs.complete_run
     name: build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -135,7 +147,7 @@ jobs:
           retention-days: 1
 
   build-freebsd:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && !inputs.complete_run
     name: build ${{ matrix.target }}
     runs-on: ubuntu-latest
     strategy:
@@ -159,9 +171,28 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - if: matrix.cgo
         run: sudo apt-get update && sudo apt-get install -y clang lld
+      # The cache only avoids refetching; the script re-verifies the pinned
+      # checksum on every use, so a stale or poisoned entry cannot be used.
+      - if: matrix.cgo
+        id: sysroot-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/freebsd-sysroot-cache
+          key: freebsd-sysroot-${{ hashFiles('.agents/freebsd-sysroot.sh') }}
+      - if: matrix.cgo
+        name: Fetch and verify pinned FreeBSD sysroot input
+        env:
+          FREEBSD_SYSROOT_CACHE: ${{ runner.temp }}/freebsd-sysroot-cache
+        run: bash .agents/freebsd-sysroot.sh --check
+      - if: matrix.cgo && steps.sysroot-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/freebsd-sysroot-cache
+          key: ${{ steps.sysroot-cache.outputs.cache-primary-key }}
       - if: matrix.cgo
         name: Build with pinned FreeBSD sysroot
         env:
+          FREEBSD_SYSROOT_CACHE: ${{ runner.temp }}/freebsd-sysroot-cache
           VERSION: ${{ steps.metadata.outputs.version }}
           COMMIT: ${{ steps.metadata.outputs.commit }}
           BUILD_DATE: ${{ steps.metadata.outputs.build_date }}
@@ -201,49 +232,31 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Resolve qualified build
-        id: qualified
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          run_id="$(git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" | sed -n 's/^Qualified-Run: //p')"
-          [[ "$run_id" =~ ^[1-9][0-9]*$ ]]
-          python3 -B .agents/release.py --check-run "$run_id" --expected-tag "$GITHUB_REF_NAME"
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-          run-id: ${{ steps.qualified.outputs.run_id }}
-          github-token: ${{ github.token }}
-      - name: Validate and publish assets
+      - name: Validate and publish qualified targets
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          cd dist
-          version="${GITHUB_REF_NAME#v}"
-          expected=(
-            "CLIProxyAPI_${version}_darwin_amd64.tar.gz" "CLIProxyAPI_${version}_darwin_amd64_no-plugin.tar.gz"
-            "CLIProxyAPI_${version}_darwin_aarch64.tar.gz" "CLIProxyAPI_${version}_darwin_aarch64_no-plugin.tar.gz"
-            "CLIProxyAPI_${version}_windows_amd64.zip" "CLIProxyAPI_${version}_windows_amd64_no-plugin.zip"
-            "CLIProxyAPI_${version}_windows_aarch64.zip" "CLIProxyAPI_${version}_windows_aarch64_no-plugin.zip"
-            "CLIProxyAPI_${version}_linux_amd64.tar.gz" "CLIProxyAPI_${version}_linux_amd64_no-plugin.tar.gz"
-            "CLIProxyAPI_${version}_linux_aarch64.tar.gz" "CLIProxyAPI_${version}_linux_aarch64_no-plugin.tar.gz"
-            "CLIProxyAPI_${version}_freebsd_amd64.tar.gz" "CLIProxyAPI_${version}_freebsd_aarch64_no-plugin.tar.gz"
-          )
-          shopt -s nullglob; archives=(CLIProxyAPI_*.tar.gz CLIProxyAPI_*.zip)
-          [[ ${#archives[@]} -eq ${#expected[@]} ]] || { printf 'expected %d archives, found %d\n' "${#expected[@]}" "${#archives[@]}" >&2; exit 1; }
-          for asset in "${expected[@]}"; do [[ -f "$asset" ]] || { echo "missing $asset" >&2; exit 1; }; done
-          sha256sum "${archives[@]}" | sort -k2 > checksums.txt
-          qualified_hash="$(git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME" | sed -n 's/^Qualified-Checksums: //p')"
-          [[ "$qualified_hash" =~ ^[0-9a-f]{64}$ ]]
+          message="$(git for-each-ref --format='%(contents)' "refs/tags/$GITHUB_REF_NAME")"
+          field() { sed -n "s/^$1: //p" <<<"$message"; }
+          run_id="$(field Qualified-Run)"; targets="$(field Qualified-Targets)"; pending="$(field Pending-Targets)"
+          qualified_hash="$(field Qualified-Checksums)"
+          [[ "$run_id" =~ ^[1-9][0-9]*$ && "$qualified_hash" =~ ^[0-9a-f]{64}$ && -n "$targets" ]]
+          # Only the targets bound by the tag are downloaded; failed or pending targets are never published.
+          for target in ${targets//,/ }; do gh run download "$run_id" -n "$target" -D dist; done
+          QUALIFIED_TARGETS="$targets" python3 -B .agents/release.py --check-run "$run_id" --expected-tag "$GITHUB_REF_NAME" --archives dist > checksums.txt
           [[ "$(sha256sum checksums.txt | cut -d' ' -f1)" == "$qualified_hash" ]]
+          mv checksums.txt dist/
+          cd dist
+          mapfile -t archives < <(cut -d' ' -f3 checksums.txt)
 
+          # The status block is recomputed from checksums.txt whenever pending targets complete.
+          status="$(python3 -B ../.agents/release.py --status "$GITHUB_REF_NAME" < checksums.txt)"
+          title="$GITHUB_REF_NAME"; [[ "$status" != "Qualification: PARTIAL"* ]] || title+=" (partial)"
+          notes="<!-- qualification-status -->"$'\n'"$status"$'\n'"<!-- /qualification-status -->"$'\n\n'"Qualification run: ${run_id}."
           prerelease=false
-          release_args=("$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes)
+          release_args=("$GITHUB_REF_NAME" --verify-tag --title "$title" --notes "$notes" --generate-notes)
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             prerelease=true
             release_args+=(--prerelease --latest=false)
@@ -255,15 +268,83 @@ jobs:
           jq -e \
             --arg tag "$GITHUB_REF_NAME" \
             --argjson prerelease "$prerelease" \
-            --argjson asset_count "$((${#expected[@]} + 1))" \
+            --argjson asset_count "$((${#archives[@]} + 1))" \
             '.tag_name == $tag and .draft == false and .prerelease == $prerelease and .published_at != null and (.assets | length) == $asset_count' \
             <<<"$release_json" >/dev/null || { echo "release was not published with the expected state and asset count" >&2; exit 1; }
-          for asset in "${expected[@]}" checksums.txt; do
+          for asset in "${archives[@]}" checksums.txt; do
             jq -e --arg name "$asset" \
               'any(.assets[]; .name == $name and .state == "uploaded" and .size > 0)' \
               <<<"$release_json" >/dev/null || { echo "published release is missing uploaded asset: $asset" >&2; exit 1; }
           done
           mkdir downloaded
           gh release download "$GITHUB_REF_NAME" --dir downloaded
-          for asset in "${expected[@]}" checksums.txt; do cmp "$asset" "downloaded/$asset"; done
+          for asset in "${archives[@]}" checksums.txt; do cmp "$asset" "downloaded/$asset"; done
           (cd downloaded && sha256sum -c checksums.txt)
+          if [[ -n "$pending" ]]; then echo "::warning::Partial release; pending targets: ${pending}"; fi
+
+  complete:
+    name: complete pending targets
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.complete_run
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Validate and publish newly qualified pending targets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ inputs.complete_run }}
+          TARGETS: ${{ inputs.targets }}
+          CHECKSUMS: ${{ inputs.checksums }}
+        run: |
+          set -euo pipefail
+          # Dispatching at the tag ref pins both this workflow and HEAD to the released source.
+          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]] || { echo "dispatch release:complete at the tag ref" >&2; exit 1; }
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$CHECKSUMS" =~ ^[0-9a-f]{64}$ && -n "$TARGETS" ]]
+          pending=",$(git for-each-ref --format='%(contents)' "refs/tags/$RELEASE_TAG" | sed -n 's/^Pending-Targets: //p'),"
+          for target in ${TARGETS//,/ }; do
+            [[ "$pending" == *",$target,"* ]] || { echo "$target is not pending for $RELEASE_TAG" >&2; exit 1; }
+            gh run download "$RUN_ID" -n "$target" -D dist
+          done
+          QUALIFIED_TARGETS="$TARGETS" python3 -B .agents/release.py --check-run "$RUN_ID" --expected-tag "$RELEASE_TAG" --archives dist > new-checksums.txt
+          [[ "$(sha256sum new-checksums.txt | cut -d' ' -f1)" == "$CHECKSUMS" ]]
+          mapfile -t archives < <(cut -d' ' -f3 new-checksums.txt)
+          # Resumable: an archive left by an interrupted attempt must match the qualified bytes.
+          published="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          for asset in "${archives[@]}"; do
+            if grep -qxF "$asset" <<<"$published"; then
+              gh release download "$RELEASE_TAG" --pattern "$asset" --dir existing
+              cmp "dist/$asset" "existing/$asset"
+            else
+              gh release upload "$RELEASE_TAG" "dist/$asset"
+            fi
+          done
+
+          # Rebuild checksums.txt from the published archives, so a retry also recovers an
+          # interrupted replacement, then prove it preserves every previously bound checksum.
+          gh release download "$RELEASE_TAG" --pattern 'CLIProxyAPI_*' --dir downloaded
+          (cd downloaded && sha256sum CLIProxyAPI_* | sort -k2) > checksums.txt
+          message="$(git for-each-ref --format='%(contents)' "refs/tags/$RELEASE_TAG")"
+          QUALIFIED_TARGETS="$(sed -n 's/^Qualified-Targets: //p' <<<"$message")" python3 -B -c 'import os, sys; sys.path.insert(0, ".agents"); from release import parse_targets, target_archives; [print(name) for target in parse_targets(os.environ["QUALIFIED_TARGETS"]) for name, _ in target_archives(sys.argv[1], target)]' "$RELEASE_TAG" > tag-archives.txt
+          [[ "$(awk 'NR == FNR {want[$0]; next} $2 in want' tag-archives.txt checksums.txt | sha256sum | cut -d' ' -f1)" == "$(sed -n 's/^Qualified-Checksums: //p' <<<"$message")" ]]
+          while IFS= read -r line; do grep -qxF "$line" checksums.txt; done < new-checksums.txt
+          if grep -qxF checksums.txt <<<"$published"; then
+            gh release download "$RELEASE_TAG" --pattern checksums.txt --dir previous
+            while IFS= read -r line; do grep -qxF "$line" checksums.txt; done < previous/checksums.txt
+          fi
+          gh release upload "$RELEASE_TAG" checksums.txt --clobber
+
+          status="$(python3 -B .agents/release.py --status "$RELEASE_TAG" < checksums.txt)"
+          body="$(gh release view "$RELEASE_TAG" --json body --jq .body)"
+          history="${body#*<!-- /qualification-status -->}"
+          [[ "$history" != "$body" ]] || { echo "release notes lack the qualification status block" >&2; exit 1; }
+          title="$RELEASE_TAG"; [[ "$status" != "Qualification: PARTIAL"* ]] || title+=" (partial)"
+          notes="<!-- qualification-status -->"$'\n'"$status"$'\n'"<!-- /qualification-status -->${history}"
+          notes+=$'\n\n'"Completed targets ${TARGETS} from qualification run ${RUN_ID} (manifest ${CHECKSUMS})."
+          gh release edit "$RELEASE_TAG" --title "$title" --notes "$notes"
+
+          gh release download "$RELEASE_TAG" --pattern checksums.txt --dir final
+          cmp checksums.txt final/checksums.txt
+          for asset in "${archives[@]}"; do cmp "dist/$asset" "downloaded/$asset"; done
+          (cd downloaded && sha256sum -c ../checksums.txt)
