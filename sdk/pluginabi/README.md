@@ -31,6 +31,12 @@ from omission. Negative or overflowing durations are ignored. `retryable` is
 preserved as evidence, not authority to override host retry/commitment policy.
 The host continues to own cooldown, eligibility and semantic-commit decisions.
 
+For compatibility with upstream plugins, the host also accepts upstream's
+`retry_after_seconds` field and the `error_detail` stream-callback key. A valid
+`retry_after_ms` (including zero) wins over `retry_after_seconds`, and `failure`
+wins over `error_detail`; positive hints also yield a whole-second
+`Retry-After` response header, rounded up.
+
 ## Authenticated HTTP ingress
 
 Schema 8 adds `ingress_proxy`, `ingress.register`, and `ingress.handle`. A

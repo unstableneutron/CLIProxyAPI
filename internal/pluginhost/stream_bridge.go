@@ -49,12 +49,26 @@ type rpcStreamEmitRequest struct {
 	Payload  []byte           `json:"payload,omitempty"`
 	Error    string           `json:"error,omitempty"`
 	Failure  *pluginabi.Error `json:"failure,omitempty"`
+	// ErrorDetail is the upstream wire name for the same structured failure.
+	ErrorDetail *pluginabi.Error `json:"error_detail,omitempty"`
 }
 
 type rpcStreamCloseRequest struct {
 	StreamID string           `json:"stream_id"`
 	Error    string           `json:"error,omitempty"`
 	Failure  *pluginabi.Error `json:"failure,omitempty"`
+	// ErrorDetail is the upstream wire name for the same structured failure.
+	ErrorDetail *pluginabi.Error `json:"error_detail,omitempty"`
+}
+
+// streamFailure decodes a stream callback failure. The structured failure
+// takes precedence over error_detail, and either takes precedence over the
+// legacy error string, which remains the message fallback.
+func streamFailure(failure, errorDetail *pluginabi.Error, legacyMessage string) error {
+	if failure == nil {
+		failure = errorDetail
+	}
+	return decodePluginFailure(failure, legacyMessage)
 }
 
 func newStreamBridge() *streamBridge {

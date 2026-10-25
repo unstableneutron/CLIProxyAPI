@@ -121,6 +121,7 @@ const (
 	MethodHostAuthGet            = "host.auth.get"
 	MethodHostAuthGetRuntime     = "host.auth.get_runtime"
 	MethodHostAuthSave           = "host.auth.save"
+	MethodHostAuthModels         = "host.auth.models"
 	MethodHostAffinityLookup     = "host.affinity.lookup"
 
 	MethodHostRoutingResetCooldown = "host.routing.reset_cooldown"
@@ -133,16 +134,25 @@ type Envelope struct {
 }
 
 type Error struct {
-	Code       string `json:"code"`
-	Message    string `json:"message"`
-	Retryable  bool   `json:"retryable,omitempty"`
-	HTTPStatus int    `json:"http_status,omitempty"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable,omitempty"`
+	// HTTPStatus is the HTTP status code (e.g. 401, 403, 429) to surface to the client.
+	// When omitted or 0, CPA defaults to HTTP 500 (internal_server_error).
+	HTTPStatus int `json:"http_status,omitempty"`
 	// Scope is "request", "credential", or "model". Empty or unknown values
 	// retain the host's default status-based classification.
 	Scope string `json:"scope,omitempty"`
 	// RetryAfterMS is a nonnegative relative delay in milliseconds. A pointer
-	// distinguishes an explicit zero delay from an absent hint.
+	// distinguishes an explicit zero delay from an absent hint. A valid value
+	// takes precedence over RetryAfterSeconds.
 	RetryAfterMS *int64 `json:"retry_after_ms,omitempty"`
+	// RetryAfterSeconds carries upstream retry guidance for cooldown and response headers.
+	// It is an optional hint. Schema-version agreement does not negotiate support for
+	// this field, and older hosts silently ignore it, so plugins must not depend on it
+	// for correctness. The same pair is accepted as error_detail on host.stream.emit
+	// and host.stream.close. It applies only when RetryAfterMS is absent or invalid.
+	RetryAfterSeconds int `json:"retry_after_seconds,omitempty"`
 }
 
 // Error implements the error interface for Error.

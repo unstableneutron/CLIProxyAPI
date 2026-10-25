@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,8 +75,25 @@ func (e rpcError) RetryAfter() *time.Duration {
 	return &delay
 }
 
+// SafeResponseHeaders exposes a positive retry hint as a whole-second
+// Retry-After header, rounding sub-second retry_after_ms hints up.
+func (e rpcError) SafeResponseHeaders() http.Header {
+	if e.retryAfter == nil || *e.retryAfter <= 0 {
+		return nil
+	}
+	seconds := int64(*e.retryAfter / time.Second)
+	if *e.retryAfter%time.Second != 0 {
+		seconds++
+	}
+	return http.Header{"Retry-After": []string{strconv.FormatInt(seconds, 10)}}
+}
+
 // decodePluginFailure is shared by RPC replies and streaming callbacks so that
 // the transport used by an executor does not change credential health semantics.
+// A valid retry_after_ms hint (including an explicit zero) takes precedence over
+// retry_after_seconds; nonpositive seconds are ignored and overflow is clamped.
+// legacyMessage is returned as a plain error when failure is nil and serves as
+// the message fallback when failure carries none.
 func decodePluginFailure(failure *pluginabi.Error, legacyMessage string) error {
 	if failure == nil {
 		if legacyMessage == "" {
@@ -85,6 +103,9 @@ func decodePluginFailure(failure *pluginabi.Error, legacyMessage string) error {
 	}
 	message := strings.TrimSpace(failure.Message)
 	if message == "" {
+		message = strings.TrimSpace(legacyMessage)
+	}
+	if message == "" {
 		message = "plugin call failed"
 	}
 	err := rpcError{
@@ -93,6 +114,13 @@ func decodePluginFailure(failure *pluginabi.Error, legacyMessage string) error {
 	}
 	if ms := failure.RetryAfterMS; ms != nil && *ms >= 0 && *ms <= int64((1<<63-1)/time.Millisecond) {
 		delay := time.Duration(*ms) * time.Millisecond
+		err.retryAfter = &delay
+	} else if failure.RetryAfterSeconds > 0 {
+		seconds := int64(failure.RetryAfterSeconds)
+		if maxSeconds := int64(1<<63-1) / int64(time.Second); seconds > maxSeconds {
+			seconds = maxSeconds
+		}
+		delay := time.Duration(seconds) * time.Second
 		err.retryAfter = &delay
 	}
 	return err
