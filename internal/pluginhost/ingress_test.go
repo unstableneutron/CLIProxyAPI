@@ -33,13 +33,152 @@ func (p testIngressProxy) HandleIngress(ctx context.Context, req pluginapi.Ingre
 }
 
 func newIngressTestHost(proxy pluginapi.IngressProxy) *Host {
+	return newIngressTestHostWithSchema(proxy, 0)
+}
+
+func newIngressTestHostWithSchema(proxy pluginapi.IngressProxy, schemaVersion uint32) *Host {
 	host := newHostWithRecords(capabilityRecord{
 		id: "ingress-test", path: "/tmp/ingress-test.so", version: "1",
 		meta:   pluginapi.Metadata{Name: "ingress-test", Version: "1"},
-		plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{IngressProxy: proxy}},
+		plugin: pluginapi.Plugin{SchemaVersion: schemaVersion, Capabilities: pluginapi.Capabilities{IngressProxy: proxy}},
 	})
 	host.RegisterIngressRoutes(context.Background())
 	return host
+}
+
+func TestIngressHandlerRouteBuffersBoundedBodyAndWritesDirectResponse(t *testing.T) {
+	var calls atomic.Int64
+	// HTML-significant characters must survive: handler responses are never sanitized.
+	responseBody := []byte(`{"data":[{"embedding":[0.1,-2e-7]}],"note":"<b>&'"}`)
+	proxy := testIngressProxy{
+		register: func(context.Context, pluginapi.IngressRegistrationRequest) (pluginapi.IngressRegistrationResponse, error) {
+			return pluginapi.IngressRegistrationResponse{Routes: []pluginapi.IngressRoute{{
+				Methods: []string{http.MethodPost}, Path: "/v1/embeddings", MaxBodyBytes: 16,
+			}}}, nil
+		},
+		handle: func(_ context.Context, req pluginapi.IngressRequest) (pluginapi.IngressResponse, error) {
+			calls.Add(1)
+			if string(req.Body) != `{"model":"m"}` {
+				t.Errorf("body = %q", req.Body)
+			}
+			if req.Headers.Get("Authorization") != "" || !containsString(req.PresentHeaders, "Authorization") {
+				t.Errorf("authorization was exposed: %#v", req.Headers)
+			}
+			return pluginapi.IngressResponse{Handled: true, Response: &pluginapi.IngressDirectResponse{
+				StatusCode: http.StatusCreated,
+				Headers:    http.Header{"Content-Type": {"application/json"}, "Connection": {"close"}, "Content-Length": {"1"}},
+				Body:       responseBody,
+			}}, nil
+		},
+	}
+	host := newIngressTestHostWithSchema(proxy, 9)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(`{"model":"m"}`))
+	req.Header.Set("Authorization", "Bearer client-key")
+	recorder := httptest.NewRecorder()
+	if !host.IngressEligible(req) || !host.ServeIngressHTTP(recorder, req) {
+		t.Fatal("handler route was not served")
+	}
+	if recorder.Code != http.StatusCreated || !bytes.Equal(recorder.Body.Bytes(), responseBody) {
+		t.Fatalf("response = %d %q", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Connection") != "" || recorder.Header().Get("Content-Length") != "" || recorder.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("response headers = %#v", recorder.Header())
+	}
+
+	for _, path := range []string{"/v1/embeddings/", "/v1/embeddings/extra", "/v1/embedding"} {
+		if host.IngressEligible(httptest.NewRequest(http.MethodPost, path, nil)) {
+			t.Fatalf("exact handler route matched %q", path)
+		}
+	}
+	if host.IngressEligible(httptest.NewRequest(http.MethodGet, "/v1/embeddings", nil)) {
+		t.Fatal("handler route matched an undeclared method")
+	}
+
+	for name, body := range map[string]io.Reader{
+		"declared length": strings.NewReader(`{"model":"too-large"}`),
+		"unknown length":  io.MultiReader(strings.NewReader(`{"model":`), strings.NewReader(`"too-large"}`)),
+	} {
+		oversized := httptest.NewRequest(http.MethodPost, "/v1/embeddings", body)
+		if name == "unknown length" {
+			oversized.ContentLength = -1
+		}
+		recorder = httptest.NewRecorder()
+		host.ServeIngressHTTP(recorder, oversized)
+		if recorder.Code != http.StatusRequestEntityTooLarge || !json.Valid(recorder.Body.Bytes()) {
+			t.Fatalf("%s: oversized response = %d %q", name, recorder.Code, recorder.Body.String())
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("plugin calls = %d, want 1 (oversized bodies must not reach the plugin)", calls.Load())
+	}
+}
+
+func TestIngressHandlerRouteRequiresDirectResponse(t *testing.T) {
+	for name, resp := range map[string]pluginapi.IngressResponse{
+		"missing response": {Handled: true},
+		"proxy plan":       {Handled: true, Plan: &pluginapi.IngressProxyPlan{UpstreamURL: "https://example.test"}, Response: &pluginapi.IngressDirectResponse{}},
+		"invalid status":   {Handled: true, Response: &pluginapi.IngressDirectResponse{StatusCode: 101}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			host := newIngressTestHostWithSchema(testIngressProxy{
+				register: func(context.Context, pluginapi.IngressRegistrationRequest) (pluginapi.IngressRegistrationResponse, error) {
+					return pluginapi.IngressRegistrationResponse{Routes: []pluginapi.IngressRoute{{Methods: []string{http.MethodPost}, Path: "/v1/rerank", MaxBodyBytes: 1024}}}, nil
+				},
+				handle: func(context.Context, pluginapi.IngressRequest) (pluginapi.IngressResponse, error) { return resp, nil },
+			}, 9)
+			recorder := httptest.NewRecorder()
+			if !host.ServeIngressHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/rerank", strings.NewReader("{}"))) {
+				t.Fatal("request was not served")
+			}
+			if recorder.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502", recorder.Code)
+			}
+		})
+	}
+}
+
+func TestIngressHandlerRouteRegistrationPolicy(t *testing.T) {
+	handler := func(path string) pluginapi.IngressRoute {
+		return pluginapi.IngressRoute{Methods: []string{http.MethodPost}, Path: path, MaxBodyBytes: 1024}
+	}
+	for name, route := range map[string]pluginapi.IngressRoute{
+		"reserved management path":  handler("/v0/management/embeddings"),
+		"reserved resource path":    handler("/v0/resource/plugins/x/embeddings"),
+		"trailing slash":            handler("/v1/embeddings/"),
+		"traversal":                 handler("/v1/../v0/management"),
+		"missing body limit":        {Methods: []string{http.MethodPost}, Path: "/v1/embeddings"},
+		"body limit above host cap": {Methods: []string{http.MethodPost}, Path: "/v1/embeddings", MaxBodyBytes: maxIngressBodyBytes + 1},
+		"upstream origins":          {Methods: []string{http.MethodPost}, Path: "/v1/embeddings", MaxBodyBytes: 1024, UpstreamOrigins: []string{"https://example.test"}},
+		"mixed prefix":              {Methods: []string{http.MethodPost}, Path: "/v1/embeddings", PathPrefix: "/v1/", MaxBodyBytes: 1024},
+	} {
+		if _, errRoute := normalizeIngressRoute(route); errRoute == nil {
+			t.Errorf("%s: route accepted", name)
+		}
+	}
+
+	exact, errExact := normalizeIngressRoute(handler("/v1/embeddings"))
+	prefix, errPrefix := normalizeIngressRoute(pluginapi.IngressRoute{Methods: []string{http.MethodPost}, PathPrefix: "/v1/", UpstreamOrigins: []string{"https://example.test"}})
+	other, errOther := normalizeIngressRoute(handler("/v1/rerank"))
+	if errExact != nil || errPrefix != nil || errOther != nil {
+		t.Fatal(errors.Join(errExact, errPrefix, errOther))
+	}
+	if !ingressRoutesOverlap(exact, prefix) || !ingressRoutesOverlap(prefix, exact) || !ingressRoutesOverlap(exact, exact) {
+		t.Fatal("overlapping exact and prefix routes were not detected")
+	}
+	if ingressRoutesOverlap(exact, other) {
+		t.Fatal("distinct exact routes reported as overlapping")
+	}
+
+	register := func(context.Context, pluginapi.IngressRegistrationRequest) (pluginapi.IngressRegistrationResponse, error) {
+		return pluginapi.IngressRegistrationResponse{Routes: []pluginapi.IngressRoute{handler("/v1/embeddings")}}, nil
+	}
+	for schema, want := range map[uint32]bool{8: false, 9: true} {
+		host := newIngressTestHostWithSchema(testIngressProxy{register: register}, schema)
+		if got := host.IngressEligible(httptest.NewRequest(http.MethodPost, "/v1/embeddings", nil)); got != want {
+			t.Errorf("schema %d handler route registered = %v, want %v", schema, got, want)
+		}
+	}
 }
 
 func ingressTestRoute(origin string) pluginapi.IngressRegistrationResponse {

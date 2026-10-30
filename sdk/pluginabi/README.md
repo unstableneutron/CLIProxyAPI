@@ -56,6 +56,25 @@ callers share the configured pool. Deployments requiring account-specific
 authorization must not treat this capability as providing it. The precise
 route, selector, and injection types are documented in `sdk/pluginapi`.
 
+### Handler routes
+
+Schema 9 adds opt-in handler routes for plugins that must read the request body,
+for example to route by a JSON `model` field with plugin-configured upstream
+keys. A handler route declares an exact `path` and `max_body_bytes` (at most
+64 MiB) instead of `path_prefix` and `upstream_origins`. Plugins declaring one
+must return schema 9 or later; older hosts reject schema 9 at registration.
+Reserved-prefix, method and overlap checks match proxy routes, and concrete
+server routes still take precedence.
+
+The host authenticates the frontend request exactly as for proxy routes, then
+buffers at most `max_body_bytes` (413 otherwise) and passes it as `body` in
+`ingress.handle`. Sensitive header values remain presence-only, so frontend
+keys never reach the plugin. The request carries `host_callback_id`; host HTTP
+callbacks made with it are cancelled with the inbound request. The plugin
+returns `response` (`status_code`, `headers`, `body`) instead of a `plan`. The
+host writes it without HTML escaping or other body rewriting, dropping only
+hop-by-hop headers and `Content-Length`. Handler routes do not stream.
+
 ## HTTP TLS curve profiles
 
 Schema 8 adds `wire_profile.tls_curves` to host HTTP requests. The optional

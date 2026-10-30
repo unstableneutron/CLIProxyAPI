@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 )
@@ -26,6 +28,7 @@ const (
 	maxIngressOrigins         = 8
 	maxCredentialSources      = 16
 	maxStoredJWTBytes         = 64 << 10
+	maxIngressBodyBytes       = 64 << 20
 )
 
 var ingressReservedPrefixes = []string{
@@ -88,6 +91,10 @@ func (h *Host) RegisterIngressRoutes(ctx context.Context) {
 				log.WithError(errNormalize).WithField("plugin_id", record.id).Warn("pluginhost: invalid ingress route skipped")
 				continue
 			}
+			if normalized.bodyRoute() && record.plugin.SchemaVersion < pluginabi.SchemaVersionIngressHandler {
+				log.WithField("plugin_id", record.id).Warnf("pluginhost: ingress handler route requires plugin schema version %d", pluginabi.SchemaVersionIngressHandler)
+				continue
+			}
 			conflict := false
 			for _, existing := range next {
 				if ingressRoutesOverlap(existing, normalized) {
@@ -96,7 +103,7 @@ func (h *Host) RegisterIngressRoutes(ctx context.Context) {
 				}
 			}
 			if conflict {
-				log.WithFields(log.Fields{"plugin_id": record.id, "path_prefix": normalized.route.PathPrefix}).Warn("pluginhost: ingress route conflicts with a higher-priority plugin and was skipped")
+				log.WithFields(log.Fields{"plugin_id": record.id, "path": normalized.routePath()}).Warn("pluginhost: ingress route conflicts with a higher-priority plugin and was skipped")
 				continue
 			}
 			normalized.pluginID = record.id
@@ -124,12 +131,31 @@ func (h *Host) callIngressRegistrar(ctx context.Context, record capabilityRecord
 
 func normalizeIngressRoute(route pluginapi.IngressRoute) (ingressRouteRecord, error) {
 	prefix := strings.TrimSpace(route.PathPrefix)
-	if prefix == "/" || !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") || strings.ContainsAny(prefix, " \t\r\n:*") || strings.Contains(prefix, "..") {
-		return ingressRouteRecord{}, fmt.Errorf("unsafe path prefix %q", route.PathPrefix)
-	}
-	for _, reserved := range ingressReservedPrefixes {
-		if strings.HasPrefix(prefix, reserved) || strings.HasPrefix(reserved, prefix) {
-			return ingressRouteRecord{}, fmt.Errorf("path prefix %q overlaps reserved prefix %q", prefix, reserved)
+	exactPath := strings.TrimSpace(route.Path)
+	bodyRoute := exactPath != "" || route.MaxBodyBytes != 0
+	if bodyRoute {
+		if prefix != "" || len(route.UpstreamOrigins) != 0 {
+			return ingressRouteRecord{}, fmt.Errorf("handler route %q must not declare a path prefix or upstream origins", route.Path)
+		}
+		if route.MaxBodyBytes <= 0 || route.MaxBodyBytes > maxIngressBodyBytes {
+			return ingressRouteRecord{}, fmt.Errorf("handler route max body bytes must be 1-%d", maxIngressBodyBytes)
+		}
+		if exactPath == "/" || !strings.HasPrefix(exactPath, "/") || strings.HasSuffix(exactPath, "/") || strings.ContainsAny(exactPath, " \t\r\n:*?#") || strings.Contains(exactPath, "..") {
+			return ingressRouteRecord{}, fmt.Errorf("unsafe handler path %q", route.Path)
+		}
+		for _, reserved := range ingressReservedPrefixes {
+			if strings.HasPrefix(exactPath, reserved) {
+				return ingressRouteRecord{}, fmt.Errorf("handler path %q overlaps reserved prefix %q", exactPath, reserved)
+			}
+		}
+	} else {
+		if prefix == "/" || !strings.HasPrefix(prefix, "/") || !strings.HasSuffix(prefix, "/") || strings.ContainsAny(prefix, " \t\r\n:*") || strings.Contains(prefix, "..") {
+			return ingressRouteRecord{}, fmt.Errorf("unsafe path prefix %q", route.PathPrefix)
+		}
+		for _, reserved := range ingressReservedPrefixes {
+			if strings.HasPrefix(prefix, reserved) || strings.HasPrefix(reserved, prefix) {
+				return ingressRouteRecord{}, fmt.Errorf("path prefix %q overlaps reserved prefix %q", prefix, reserved)
+			}
 		}
 	}
 	if len(route.Methods) == 0 || len(route.Methods) > maxIngressMethods {
@@ -154,7 +180,7 @@ func normalizeIngressRoute(route pluginapi.IngressRoute) (ingressRouteRecord, er
 		}
 		requiredHeaders = append(requiredHeaders, header)
 	}
-	if len(route.UpstreamOrigins) == 0 || len(route.UpstreamOrigins) > maxIngressOrigins {
+	if !bodyRoute && (len(route.UpstreamOrigins) == 0 || len(route.UpstreamOrigins) > maxIngressOrigins) {
 		return ingressRouteRecord{}, fmt.Errorf("upstream origins must contain 1-%d entries", maxIngressOrigins)
 	}
 	origins := make(map[string]struct{}, len(route.UpstreamOrigins))
@@ -166,8 +192,29 @@ func normalizeIngressRoute(route pluginapi.IngressRoute) (ingressRouteRecord, er
 		origins[origin] = struct{}{}
 	}
 	route.PathPrefix = prefix
+	route.Path = exactPath
 	route.RequiredHeaders = requiredHeaders
 	return ingressRouteRecord{route: route, methods: methods, origins: origins}, nil
+}
+
+// bodyRoute reports whether the route is a bounded-body handler route rather than a proxy route.
+func (r ingressRouteRecord) bodyRoute() bool {
+	return r.route.Path != ""
+}
+
+func (r ingressRouteRecord) routePath() string {
+	if r.bodyRoute() {
+		return r.route.Path
+	}
+	return r.route.PathPrefix
+}
+
+// matchesPath applies exact matching to handler routes and prefix matching to proxy routes.
+func (r ingressRouteRecord) matchesPath(path string) bool {
+	if r.bodyRoute() {
+		return path == r.route.Path
+	}
+	return strings.HasPrefix(path, r.route.PathPrefix)
 }
 
 func canonicalIngressOrigin(raw string) (string, error) {
@@ -182,7 +229,7 @@ func canonicalIngressOrigin(raw string) (string, error) {
 }
 
 func ingressRoutesOverlap(left, right ingressRouteRecord) bool {
-	if !strings.HasPrefix(left.route.PathPrefix, right.route.PathPrefix) && !strings.HasPrefix(right.route.PathPrefix, left.route.PathPrefix) {
+	if !left.matchesPath(right.routePath()) && !right.matchesPath(left.routePath()) {
 		return false
 	}
 	for method := range left.methods {
@@ -208,7 +255,7 @@ func (h *Host) ingressRouteForRequest(r *http.Request) (ingressRouteRecord, bool
 	routes := append([]ingressRouteRecord(nil), h.ingressRoutes...)
 	h.mu.Unlock()
 	for _, route := range routes {
-		if _, ok := route.methods[strings.ToUpper(r.Method)]; !ok || !strings.HasPrefix(r.URL.Path, route.route.PathPrefix) {
+		if _, ok := route.methods[strings.ToUpper(r.Method)]; !ok || !route.matchesPath(r.URL.Path) {
 			continue
 		}
 		eligible := true
@@ -240,6 +287,15 @@ func (h *Host) ServeIngressHTTP(w http.ResponseWriter, r *http.Request) bool {
 		Headers:        sanitizedIngressHeaders(r.Header),
 		PresentHeaders: ingressHeaderNames(r.Header),
 	}
+	start := time.Now()
+	if route.bodyRoute() {
+		body, status := readIngressBody(r, route.route.MaxBodyBytes)
+		if status != 0 {
+			writeIngressError(w, status, http.StatusText(status))
+			return true
+		}
+		request.Body = body
+	}
 	resp, errHandle := h.callIngressHandler(r.Context(), route, request)
 	if errHandle != nil {
 		log.WithError(errHandle).WithFields(log.Fields{"plugin_id": route.pluginID, "method": r.Method, "path": r.URL.Path}).Warn("pluginhost: ingress handler failed")
@@ -248,6 +304,24 @@ func (h *Host) ServeIngressHTTP(w http.ResponseWriter, r *http.Request) bool {
 	}
 	if !resp.Handled {
 		return false
+	}
+	if route.bodyRoute() {
+		if resp.Response == nil || resp.Plan != nil || (resp.Response.StatusCode != 0 && (resp.Response.StatusCode < 200 || resp.Response.StatusCode > 599)) {
+			writeIngressError(w, http.StatusBadGateway, "invalid ingress handler response")
+			return true
+		}
+		statusCode := resp.Response.StatusCode
+		if statusCode == 0 {
+			statusCode = http.StatusOK
+		}
+		copyIngressHeaders(w.Header(), resp.Response.Headers)
+		w.Header().Del("Content-Length")
+		w.WriteHeader(statusCode)
+		if _, errWrite := w.Write(resp.Response.Body); errWrite != nil {
+			log.WithError(errWrite).WithField("plugin_id", route.pluginID).Warn("pluginhost: ingress handler response write failed")
+		}
+		log.WithFields(log.Fields{"plugin_id": route.pluginID, "method": r.Method, "path": r.URL.Path, "status": statusCode, "duration_ms": time.Since(start).Milliseconds()}).Info("pluginhost: ingress handler completed")
+		return true
 	}
 	if resp.Plan == nil {
 		writeIngressError(w, http.StatusBadGateway, "invalid ingress proxy plan")
@@ -261,6 +335,28 @@ func (h *Host) ServeIngressHTTP(w http.ResponseWriter, r *http.Request) bool {
 		}
 	}
 	return true
+}
+
+// readIngressBody buffers at most limit bytes. A non-zero status reports why the body was rejected.
+func readIngressBody(r *http.Request, limit int64) ([]byte, int) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, 0
+	}
+	if r.ContentLength > limit {
+		return nil, http.StatusRequestEntityTooLarge
+	}
+	body, errRead := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if errRead != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(errRead, &maxBytesErr) {
+			return nil, http.StatusRequestEntityTooLarge
+		}
+		return nil, http.StatusBadRequest
+	}
+	if int64(len(body)) > limit {
+		return nil, http.StatusRequestEntityTooLarge
+	}
+	return body, 0
 }
 
 func (h *Host) callIngressHandler(ctx context.Context, route ingressRouteRecord, req pluginapi.IngressRequest) (resp pluginapi.IngressResponse, err error) {

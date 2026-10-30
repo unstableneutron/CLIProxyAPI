@@ -78,6 +78,11 @@ type rpcAuthModelRequest struct {
 	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
+type rpcIngressRequest struct {
+	pluginapi.IngressRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
+}
+
 type rpcExecutorRequest struct {
 	pluginapi.ExecutorRequest
 	StreamID       string `json:"stream_id,omitempty"`

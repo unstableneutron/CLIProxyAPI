@@ -19,7 +19,8 @@ func TestRPCIngressRequiresSchemaEight(t *testing.T) {
 		{"schema seven without ingress", 7, false, false},
 		{"schema seven with ingress", 7, true, true},
 		{"schema eight with ingress", 8, true, false},
-		{"future schema", 9, true, true},
+		{"schema nine with ingress", 9, true, false},
+		{"future schema", 10, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, errMarshal := marshalRPCResult(rpcRegistration{

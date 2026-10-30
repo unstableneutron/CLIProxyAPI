@@ -20,7 +20,8 @@ const (
 	// Version 7 preserves scoped failures and retry hints in envelopes and stream
 	// callbacks. Plugins requiring these semantics must declare version 7.
 	// Version 8 adds authenticated ingress proxy plans and explicit TLS curves.
-	SchemaVersion uint32 = 8
+	// Version 9 adds body-aware ingress handler routes with direct responses.
+	SchemaVersion uint32 = 9
 	// SchemaVersionStreamChunkOmitRequestBody is the first schema version that omits
 	// request bodies on payload stream-chunk interceptor calls.
 	SchemaVersionStreamChunkOmitRequestBody uint32 = 3
@@ -40,6 +41,8 @@ const (
 	SchemaVersionIngressProxy uint32 = 8
 	// SchemaVersionTLSCurves is the first schema honoring explicit TLS curve profiles.
 	SchemaVersionTLSCurves uint32 = 8
+	// SchemaVersionIngressHandler is the first schema supporting bounded-body ingress handler routes.
+	SchemaVersionIngressHandler uint32 = 9
 )
 
 const (

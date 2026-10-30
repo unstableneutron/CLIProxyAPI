@@ -1463,15 +1463,23 @@ type IngressRegistrationResponse struct {
 	Routes []IngressRoute `json:"routes"`
 }
 
-// IngressRoute declares an authenticated NoRoute prefix owned by a plugin.
+// IngressRoute declares an authenticated NoRoute route owned by a plugin.
+//
+// A proxy route sets PathPrefix and UpstreamOrigins; the host streams bodies to the plugin's plan.
+// A handler route (schema 9) sets an exact Path and MaxBodyBytes, and no PathPrefix or origins;
+// the host buffers at most MaxBodyBytes, passes the body to HandleIngress, and writes the
+// returned Response unchanged.
 type IngressRoute struct {
 	Methods         []string `json:"methods"`
 	PathPrefix      string   `json:"path_prefix"`
+	Path            string   `json:"path,omitempty"`
+	MaxBodyBytes    int64    `json:"max_body_bytes,omitempty"`
 	RequiredHeaders []string `json:"required_headers,omitempty"`
 	UpstreamOrigins []string `json:"upstream_origins"`
 }
 
-// IngressRequest contains request metadata only. The host never buffers or exposes the body.
+// IngressRequest contains request metadata. Proxy routes never receive the body; handler
+// routes receive the bounded body in Body.
 // Sensitive header values are omitted; PresentHeaders still reports their presence.
 type IngressRequest struct {
 	Method         string      `json:"method"`
@@ -1480,12 +1488,23 @@ type IngressRequest struct {
 	RawQuery       string      `json:"raw_query,omitempty"`
 	Headers        http.Header `json:"headers,omitempty"`
 	PresentHeaders []string    `json:"present_headers,omitempty"`
+	Body           []byte      `json:"body,omitempty"`
 }
 
-// IngressResponse reports whether a request is eligible and supplies a data-only proxy plan.
+// IngressResponse reports whether a request is eligible. Proxy routes supply a data-only
+// proxy plan; handler routes supply a direct Response.
 type IngressResponse struct {
-	Handled bool              `json:"handled"`
-	Plan    *IngressProxyPlan `json:"plan,omitempty"`
+	Handled  bool                   `json:"handled"`
+	Plan     *IngressProxyPlan      `json:"plan,omitempty"`
+	Response *IngressDirectResponse `json:"response,omitempty"`
+}
+
+// IngressDirectResponse is written by the host for handler routes without body rewriting.
+// The host drops hop-by-hop headers and Content-Length. Zero StatusCode means 200.
+type IngressDirectResponse struct {
+	StatusCode int         `json:"status_code,omitempty"`
+	Headers    http.Header `json:"headers,omitempty"`
+	Body       []byte      `json:"body,omitempty"`
 }
 
 // IngressProxyPlan is validated and executed by the host against the registered route policy.

@@ -262,7 +262,13 @@ func (a *rpcPluginAdapter) RegisterIngress(ctx context.Context, req pluginapi.In
 }
 
 func (a *rpcPluginAdapter) HandleIngress(ctx context.Context, req pluginapi.IngressRequest) (pluginapi.IngressResponse, error) {
-	return callPlugin[pluginapi.IngressResponse](ctx, a.client, pluginabi.MethodIngressHandle, req)
+	// Handler routes issue host HTTP calls bound to the inbound request's cancellation.
+	callbackID, closeCallback := a.openHostCallbackContext(ctx)
+	defer closeCallback()
+	return callPlugin[pluginapi.IngressResponse](ctx, a.client, pluginabi.MethodIngressHandle, rpcIngressRequest{
+		IngressRequest: req,
+		HostCallbackID: callbackID,
+	})
 }
 
 func callPlugin[T any](ctx context.Context, client pluginClient, method string, request any) (T, error) {
