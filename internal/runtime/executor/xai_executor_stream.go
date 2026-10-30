@@ -156,6 +156,9 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 				hasPendingEventLine := pendingEventLine != nil
 				emittedEvent := false
 				for _, eventData := range eventDataList {
+					if rawEventType := gjson.GetBytes(eventData, "type").String(); rawEventType == "response.output_item.done" || rawEventType == "response.completed" || rawEventType == "response.incomplete" || rawEventType == "response.done" {
+						streamUsage.ObserveResponsesStream(eventData)
+					}
 					prepared.applyPatch.RememberDispatcherEvent(eventData)
 					for _, restoredEvent := range namespaceRestorer.restore(eventData) {
 						if prepared.webSearchAlias != "" {
@@ -167,11 +170,6 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 						}
 						reporter.ObserveResponseModel(restoredEvent)
 						normalizedEventName := gjson.GetBytes(restoredEvent, "type").String()
-						if normalizedEventName == "response.completed" || normalizedEventName == "response.incomplete" {
-							if detail, ok := helps.ParseCodexUsage(restoredEvent); ok {
-								streamUsage.Observe(detail, true)
-							}
-						}
 
 						if hasPendingEventLine {
 							eventLine := []byte("event: " + normalizedEventName)

@@ -45,6 +45,7 @@ type xaiNamespaceToolRef struct {
 	namespace    string
 	name         string
 	isDispatcher bool
+	children     map[string]struct{}
 }
 
 // xaiClientToolKey identifies a client-declared callable tool using the
@@ -1132,7 +1133,7 @@ func xaiToolChoiceMatchesAvailable(choice gjson.Result, available map[xaiToolCho
 	return ok
 }
 
-func xaiCountFlattenedTools(tools gjson.Result) int {
+func xaiCountFlattenedToolsWithSeen(tools gjson.Result, seenFunctionNames map[string]struct{}) int {
 	if !tools.Exists() || !tools.IsArray() {
 		return 0
 	}
@@ -1140,13 +1141,35 @@ func xaiCountFlattenedTools(tools gjson.Result) int {
 	for _, tool := range tools.Array() {
 		switch tool.Get("type").String() {
 		case xaiNamespaceToolType:
+			namespaceName := tool.Get("name").String()
 			if nestedTools := tool.Get("tools"); nestedTools.IsArray() {
-				count += len(nestedTools.Array())
+				for _, nestedTool := range nestedTools.Array() {
+					if nestedTool.Get("type").String() == xaiToolSearchType {
+						continue
+					}
+					qualifiedName := qualifyXAINamespaceToolName(namespaceName, nestedTool.Get("name").String())
+					if qualifiedName != "" && seenFunctionNames != nil {
+						if _, seen := seenFunctionNames[qualifiedName]; seen {
+							continue
+						}
+						seenFunctionNames[qualifiedName] = struct{}{}
+					}
+					count++
+				}
 			} else {
 				count++
 			}
 		case xaiToolSearchType:
 			// Tool search is stripped by normalizeXAITool
+		case xaiFunctionToolType, xaiCustomToolType:
+			name := strings.TrimSpace(tool.Get("name").String())
+			if name != "" && seenFunctionNames != nil {
+				if _, seen := seenFunctionNames[name]; seen {
+					continue
+				}
+				seenFunctionNames[name] = struct{}{}
+			}
+			count++
 		default:
 			count++
 		}
@@ -1154,13 +1177,18 @@ func xaiCountFlattenedTools(tools gjson.Result) int {
 	return count
 }
 
+func xaiCountFlattenedTools(tools gjson.Result) int {
+	return xaiCountFlattenedToolsWithSeen(tools, make(map[string]struct{}))
+}
+
 func xaiTotalFlattenedToolsCount(body []byte, willInjectXSearch bool) int {
-	count := xaiCountFlattenedTools(gjson.GetBytes(body, "tools"))
+	seenFunctionNames := make(map[string]struct{})
+	count := xaiCountFlattenedToolsWithSeen(gjson.GetBytes(body, "tools"), seenFunctionNames)
 	input := gjson.GetBytes(body, "input")
 	if input.Exists() && input.IsArray() {
 		for _, item := range input.Array() {
 			if item.Get("type").String() == "additional_tools" {
-				count += xaiCountFlattenedTools(item.Get("tools"))
+				count += xaiCountFlattenedToolsWithSeen(item.Get("tools"), seenFunctionNames)
 			}
 		}
 	}
@@ -1174,17 +1202,61 @@ func xaiShouldFoldNamespaceTools(body []byte, willInjectXSearch bool) bool {
 	return xaiTotalFlattenedToolsCount(body, willInjectXSearch) > xaiMaxTools
 }
 
-func buildXAINamespaceDispatcherTool(tool gjson.Result, dispatcherName string, allowed map[string]struct{}) []byte {
+func collectXAINamespaceDeclarationsByName(body []byte) map[string][]gjson.Result {
+	byName := make(map[string][]gjson.Result)
+	collect := func(tools gjson.Result) {
+		if !tools.Exists() || !tools.IsArray() {
+			return
+		}
+		for _, tool := range tools.Array() {
+			if tool.Get("type").String() != xaiNamespaceToolType {
+				continue
+			}
+			namespaceName := strings.TrimSpace(tool.Get("name").String())
+			if namespaceName == "" {
+				continue
+			}
+			byName[namespaceName] = append(byName[namespaceName], tool)
+		}
+	}
+	collect(gjson.GetBytes(body, "tools"))
+	input := gjson.GetBytes(body, "input")
+	if input.Exists() && input.IsArray() {
+		for _, item := range input.Array() {
+			if item.Get("type").String() == "additional_tools" {
+				collect(item.Get("tools"))
+			}
+		}
+	}
+	return byName
+}
+
+func buildXAINamespaceDispatcherTool(tool gjson.Result, dispatcherName string, allowed map[string]struct{}, extraDeclarations ...gjson.Result) []byte {
 	namespaceName := strings.TrimSpace(tool.Get("name").String())
 	if namespaceName == "" || dispatcherName == "" {
 		return nil
 	}
 	description := strings.TrimSpace(tool.Get("description").String())
 
+	declarations := make([]gjson.Result, 0, 1+len(extraDeclarations))
+	declarations = append(declarations, tool)
+	declarations = append(declarations, extraDeclarations...)
+
 	var toolNames []string
 	var toolDescriptions []string
-	if nestedTools := tool.Get("tools"); nestedTools.IsArray() {
+	seenChildren := make(map[string]struct{})
+	for _, decl := range declarations {
+		if description == "" {
+			description = strings.TrimSpace(decl.Get("description").String())
+		}
+		nestedTools := decl.Get("tools")
+		if !nestedTools.IsArray() {
+			continue
+		}
 		for _, child := range nestedTools.Array() {
+			if child.Get("type").String() == xaiToolSearchType {
+				continue
+			}
 			childName := strings.TrimSpace(child.Get("name").String())
 			if childName == "" {
 				continue
@@ -1194,6 +1266,10 @@ func buildXAINamespaceDispatcherTool(tool gjson.Result, dispatcherName string, a
 					continue
 				}
 			}
+			if _, exists := seenChildren[childName]; exists {
+				continue
+			}
+			seenChildren[childName] = struct{}{}
 			toolNames = append(toolNames, childName)
 			childDesc := strings.TrimSpace(child.Get("description").String())
 
@@ -1296,13 +1372,17 @@ func normalizeXAIToolsWithFold(body []byte, shouldFold bool) []byte {
 	keepImageGeneration := xaiSupportsNativeImageGeneration(gjson.GetBytes(body, "model").String())
 	dispatcherNames := xaiNamespaceDispatcherNames(body, shouldFold)
 	childAllowlists := xaiFoldedNamespaceChildAllowlists(body, shouldFold)
+	var namespaceDecls map[string][]gjson.Result
+	if shouldFold {
+		namespaceDecls = collectXAINamespaceDeclarationsByName(body)
+	}
 	original := body
 	normalizeAtPath := func(path string) bool {
 		tools := gjson.GetBytes(body, path)
 		if !tools.Exists() || !tools.IsArray() {
 			return true
 		}
-		filtered, changed, ok := normalizeXAIToolArray(tools, keepImageGeneration, shouldFold, dispatcherNames, childAllowlists)
+		filtered, changed, ok := normalizeXAIToolArray(tools, keepImageGeneration, shouldFold, namespaceDecls, dispatcherNames, childAllowlists)
 		if !ok {
 			return false
 		}
@@ -1403,8 +1483,22 @@ func clampXAIToolsLimit(body []byte, maxTools int, refs map[string]xaiNamespaceT
 	return normalizeXAIToolChoiceForTools(updated)
 }
 
+// xaiDeduplicatedToolName returns the unique name key for tool declarations that
+// must not repeat in the final xAI tools list (functions, custom tools, and
+// namespace dispatchers). Hosted tools without a function name return "".
+func xaiDeduplicatedToolName(tool gjson.Result) string {
+	switch strings.TrimSpace(tool.Get("type").String()) {
+	case xaiFunctionToolType, xaiCustomToolType, xaiNamespaceToolType:
+		return strings.TrimSpace(tool.Get("name").String())
+	default:
+		return ""
+	}
+}
+
 // promoteXAIAdditionalTools moves Responses Lite tool declarations to the
 // top-level tools array because xAI does not accept additional_tools input items.
+// Declarations are deduplicated by tool name with first-wins precedence so
+// top-level tools remain authoritative over historical additional_tools copies.
 func promoteXAIAdditionalTools(body []byte) []byte {
 	if !gjson.ValidBytes(body) {
 		return body
@@ -1416,14 +1510,14 @@ func promoteXAIAdditionalTools(body []byte) []byte {
 
 	inputItems := input.Array()
 	remainingInput := make([]json.RawMessage, 0, len(inputItems))
-	promotedTools := make([]json.RawMessage, 0)
+	promotedTools := make([]gjson.Result, 0)
 	for _, item := range inputItems {
 		if item.Get("type").String() != "additional_tools" {
 			remainingInput = append(remainingInput, json.RawMessage(item.Raw))
 			continue
 		}
 		for _, tool := range item.Get("tools").Array() {
-			promotedTools = append(promotedTools, json.RawMessage(tool.Raw))
+			promotedTools = append(promotedTools, tool)
 		}
 	}
 	if len(remainingInput) == len(inputItems) {
@@ -1443,13 +1537,29 @@ func promoteXAIAdditionalTools(body []byte) []byte {
 	}
 
 	topLevelTools := gjson.GetBytes(updated, "tools")
-	tools := make([]json.RawMessage, 0, len(topLevelTools.Array())+len(promotedTools))
+	topLevelArray := topLevelTools.Array()
+	tools := make([]json.RawMessage, 0, len(topLevelArray)+len(promotedTools))
+	seenNames := make(map[string]struct{}, len(topLevelArray)+len(promotedTools))
 	if topLevelTools.IsArray() {
-		for _, tool := range topLevelTools.Array() {
+		for _, tool := range topLevelArray {
+			if name := xaiDeduplicatedToolName(tool); name != "" {
+				if _, exists := seenNames[name]; exists {
+					continue
+				}
+				seenNames[name] = struct{}{}
+			}
 			tools = append(tools, json.RawMessage(tool.Raw))
 		}
 	}
-	tools = append(tools, promotedTools...)
+	for _, tool := range promotedTools {
+		if name := xaiDeduplicatedToolName(tool); name != "" {
+			if _, exists := seenNames[name]; exists {
+				continue
+			}
+			seenNames[name] = struct{}{}
+		}
+		tools = append(tools, json.RawMessage(tool.Raw))
+	}
 	rawTools, errMarshalTools := json.Marshal(tools)
 	if errMarshalTools != nil {
 		return body
@@ -1461,9 +1571,20 @@ func promoteXAIAdditionalTools(body []byte) []byte {
 	return updated
 }
 
-func normalizeXAIToolArray(tools gjson.Result, keepImageGeneration, shouldFold bool, dispatcherNames map[string]string, childAllowlists map[string]map[string]struct{}) ([]byte, bool, bool) {
+func normalizeXAIToolArray(tools gjson.Result, keepImageGeneration, shouldFold bool, namespaceDecls map[string][]gjson.Result, dispatcherNames map[string]string, childAllowlists map[string]map[string]struct{}) ([]byte, bool, bool) {
 	toolItems := tools.Array()
 	filtered := make([][]byte, 0, len(toolItems))
+	seenNames := make(map[string]struct{}, len(toolItems))
+	appendUnique := func(raw []byte) bool {
+		if name := xaiDeduplicatedToolName(gjson.ParseBytes(raw)); name != "" {
+			if _, exists := seenNames[name]; exists {
+				return true
+			}
+			seenNames[name] = struct{}{}
+		}
+		filtered = append(filtered, raw)
+		return false
+	}
 	changed := false
 	for _, tool := range toolItems {
 		toolType := tool.Get("type").String()
@@ -1471,8 +1592,8 @@ func normalizeXAIToolArray(tools gjson.Result, keepImageGeneration, shouldFold b
 			changed = true
 			if shouldFold {
 				namespaceName := strings.TrimSpace(tool.Get("name").String())
-				if dispatcher := buildXAINamespaceDispatcherTool(tool, dispatcherNames[namespaceName], childAllowlists[namespaceName]); len(dispatcher) > 0 {
-					filtered = append(filtered, dispatcher)
+				if dispatcher := buildXAINamespaceDispatcherTool(tool, dispatcherNames[namespaceName], childAllowlists[namespaceName], namespaceDecls[namespaceName]...); len(dispatcher) > 0 {
+					_ = appendUnique(dispatcher)
 				}
 				continue
 			}
@@ -1485,7 +1606,9 @@ func normalizeXAIToolArray(tools gjson.Result, keepImageGeneration, shouldFold b
 					}
 					changed = changed || nestedChanged
 					if len(nestedRaw) > 0 {
-						filtered = append(filtered, nestedRaw)
+						if appendUnique(nestedRaw) {
+							changed = true
+						}
 					}
 				}
 			}
@@ -1497,7 +1620,9 @@ func normalizeXAIToolArray(tools gjson.Result, keepImageGeneration, shouldFold b
 		}
 		changed = changed || toolChanged
 		if len(raw) > 0 {
-			filtered = append(filtered, raw)
+			if appendUnique(raw) {
+				changed = true
+			}
 		}
 	}
 	if !changed {
@@ -1785,12 +1910,25 @@ func collectXAINamespaceToolRefsWithFold(body []byte, shouldFold bool) map[strin
 	refs := make(map[string]xaiNamespaceToolRef)
 	dispatcherNames := xaiNamespaceDispatcherNames(body, shouldFold)
 	childAllowlists := xaiFoldedNamespaceChildAllowlists(body, shouldFold)
+	claimed := make(map[string]struct{})
 	collect := func(tools gjson.Result) {
 		if !tools.Exists() || !tools.IsArray() {
 			return
 		}
 		for _, tool := range tools.Array() {
-			if tool.Get("type").String() != xaiNamespaceToolType {
+			toolType := strings.TrimSpace(tool.Get("type").String())
+			if toolType == xaiFunctionToolType || toolType == xaiCustomToolType {
+				if name := strings.TrimSpace(tool.Get("name").String()); name != "" {
+					claimed[name] = struct{}{}
+					if shouldFold {
+						if existing, ok := refs[name]; ok && !existing.isDispatcher {
+							delete(refs, name)
+						}
+					}
+				}
+				continue
+			}
+			if toolType != xaiNamespaceToolType {
 				continue
 			}
 			namespaceName := strings.TrimSpace(tool.Get("name").String())
@@ -1799,10 +1937,21 @@ func collectXAINamespaceToolRefsWithFold(body []byte, shouldFold bool) map[strin
 			}
 			if shouldFold {
 				if dispatcherName := dispatcherNames[namespaceName]; dispatcherName != "" {
-					refs[dispatcherName] = xaiNamespaceToolRef{namespace: namespaceName, name: "", isDispatcher: true}
+					// A dispatcher replaces a folded child ref with the same qualified name.
+					if existing, exists := refs[dispatcherName]; !exists || !existing.isDispatcher {
+						refs[dispatcherName] = xaiNamespaceToolRef{
+							namespace:    namespaceName,
+							name:         "",
+							isDispatcher: true,
+							children:     make(map[string]struct{}),
+						}
+					}
 				}
 			}
 			for _, nestedTool := range tool.Get("tools").Array() {
+				if nestedTool.Get("type").String() == xaiToolSearchType {
+					continue
+				}
 				toolName := strings.TrimSpace(nestedTool.Get("name").String())
 				if allowed := childAllowlists[namespaceName]; allowed != nil {
 					if _, ok := allowed[toolName]; !ok {
@@ -1813,6 +1962,21 @@ func collectXAINamespaceToolRefsWithFold(body []byte, shouldFold bool) map[strin
 				if qualifiedName == "" {
 					continue
 				}
+				if shouldFold {
+					if dispRef, ok := refs[dispatcherNames[namespaceName]]; ok && dispRef.isDispatcher && dispRef.children != nil {
+						dispRef.children[toolName] = struct{}{}
+					}
+					if _, claimedByTool := claimed[qualifiedName]; !claimedByTool {
+						if _, exists := refs[qualifiedName]; !exists {
+							refs[qualifiedName] = xaiNamespaceToolRef{namespace: namespaceName, name: toolName, isDispatcher: false}
+						}
+					}
+					continue
+				}
+				if _, exists := claimed[qualifiedName]; exists {
+					continue
+				}
+				claimed[qualifiedName] = struct{}{}
 				refs[qualifiedName] = xaiNamespaceToolRef{namespace: namespaceName, name: toolName, isDispatcher: false}
 			}
 		}
@@ -1866,6 +2030,10 @@ func xaiNamespaceDispatcherNames(body []byte, shouldFold bool) map[string]string
 			}
 			namespaceName := strings.TrimSpace(tool.Get("name").String())
 			if namespaceName == "" {
+				continue
+			}
+			// Duplicate declarations of a namespace fold into one dispatcher.
+			if _, exists := result[namespaceName]; exists {
 				continue
 			}
 			name := namespaceName
