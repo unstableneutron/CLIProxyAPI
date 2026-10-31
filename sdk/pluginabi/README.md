@@ -4,7 +4,9 @@ Upstream CLIProxyAPI assigns its own features to schemas 7-9: request-body
 omission (7), request-body patching (8) and multi-provider model registrations
 (9). This host supports both upstream's and the fork's features at the same
 numbers. Every feature is opt-in through its own capability or field, so a
-plugin declaring schema 9 gets only what it declares.
+plugin declaring schema 9 gets only what it declares. Schema 10 is upstream
+only: plugins may register multiple auth provider identifiers. The host still
+accepts every older schema, so schema-9 fork plugins keep working.
 
 Schema 7 adds typed failure details without changing native ABI v1. A plugin
 that depends on these semantics must return `schema_version: 7` at registration

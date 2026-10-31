@@ -58,7 +58,9 @@ type rpcCapabilities struct {
 }
 
 type rpcIdentifierResponse struct {
-	Identifier string `json:"identifier"`
+	Identifier          string   `json:"identifier"`
+	Identifiers         []string `json:"identifiers,omitempty"`
+	CredentialProviders []string `json:"credential_providers,omitempty"`
 }
 
 type rpcExecutorStreamResponse struct {
@@ -225,7 +227,7 @@ func rpcCapabilitiesFromPlugin(plugin pluginapi.Plugin) rpcCapabilities {
 	return rpcCapabilities{
 		ModelRegistrar:                    caps.ModelRegistrar != nil,
 		ModelProvider:                     caps.ModelProvider != nil,
-		AuthProvider:                      caps.AuthProvider != nil,
+		AuthProvider:                      hasAuthProviderCap(caps),
 		FrontendAuthProvider:              caps.FrontendAuthProvider != nil,
 		FrontendAuthProviderExclusive:     caps.FrontendAuthProvider != nil && caps.FrontendAuthProviderExclusive,
 		FrontendAuthProviderOmitBody:      frontendAuthProviderWantsOmitBody(caps),

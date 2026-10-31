@@ -20,7 +20,8 @@ func TestRPCIngressRequiresSchemaEight(t *testing.T) {
 		{"schema seven with ingress", 7, true, true},
 		{"schema eight with ingress", 8, true, false},
 		{"schema nine with ingress", 9, true, false},
-		{"future schema", 10, true, true},
+		{"current schema with ingress", pluginabi.SchemaVersion, true, false},
+		{"future schema", pluginabi.SchemaVersion + 1, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, errMarshal := marshalRPCResult(rpcRegistration{
