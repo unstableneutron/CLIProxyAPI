@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 func TestExecutorAdapterPrepareAppliesPayloadDefaultsAndOverrides(t *testing.T) {
@@ -63,10 +63,10 @@ func TestExecutorAdapterPrepareAppliesPayloadDefaultsAndOverrides(t *testing.T) 
 			if errPrepare != nil {
 				t.Fatalf("prepareExecutorCall() error = %v", errPrepare)
 			}
-			if got := gjson.GetBytes(prepared.req.Payload, "temperature").Float(); got != test.wantTemperature {
+			if got := ojson.GetBytes(prepared.req.Payload, "temperature").Float(); got != test.wantTemperature {
 				t.Fatalf("temperature = %v, want %v; payload=%s", got, test.wantTemperature, prepared.req.Payload)
 			}
-			if got := gjson.GetBytes(prepared.req.Payload, "top_p").Float(); got != 0.4 {
+			if got := ojson.GetBytes(prepared.req.Payload, "top_p").Float(); got != 0.4 {
 				t.Fatalf("top_p = %v, want forced override 0.4; payload=%s", got, prepared.req.Payload)
 			}
 			if !bytes.Equal(test.payload, originalPayload) || !bytes.Equal(originalRequest, originalPayload) {
@@ -134,11 +134,11 @@ func TestExecutorAdapterPrepareUsesAliasHeadersAndRequestPath(t *testing.T) {
 			if errPrepare != nil {
 				t.Fatalf("prepareExecutorCall() error = %v", errPrepare)
 			}
-			if got := gjson.GetBytes(prepared.req.Payload, "temperature").Float(); got != test.wantTemp {
+			if got := ojson.GetBytes(prepared.req.Payload, "temperature").Float(); got != test.wantTemp {
 				t.Fatalf("alias/header-gated temperature = %v, want %v; payload=%s", got, test.wantTemp, prepared.req.Payload)
 			}
 			var imageCount int64
-			gjson.GetBytes(prepared.req.Payload, "tools").ForEach(func(_, tool gjson.Result) bool {
+			ojson.GetBytes(prepared.req.Payload, "tools").ForEach(func(_, tool ojson.Result) bool {
 				if tool.Get("type").String() == "image_generation" {
 					imageCount++
 				}
@@ -180,7 +180,7 @@ func TestExecutorAdapterPrepareTranslatesOriginalForCrossFormatDefaults(t *testi
 	if errPrepare != nil {
 		t.Fatalf("prepareExecutorCall() error = %v", errPrepare)
 	}
-	if got := gjson.GetBytes(prepared.req.Payload, "max_tokens").Int(); got != 32000 {
+	if got := ojson.GetBytes(prepared.req.Payload, "max_tokens").Int(); got != 32000 {
 		t.Fatalf("max_tokens = %d, want translator value 32000 because original translated max_tokens suppresses configured default; payload=%s", got, prepared.req.Payload)
 	}
 	if !bytes.Contains(prepared.req.Payload, []byte(`"messages"`)) {
@@ -213,7 +213,7 @@ func TestExecutorAdapterPrepareAppliesCanonicalThinkingAndRejectsInvalidLevel(t 
 			if req.Model != modelID {
 				t.Fatalf("callback model = %q, want base model %q", req.Model, modelID)
 			}
-			if got := gjson.GetBytes(req.Payload, "reasoning_effort").String(); got != "high" {
+			if got := ojson.GetBytes(req.Payload, "reasoning_effort").String(); got != "high" {
 				t.Fatalf("reasoning_effort = %q, want high; payload=%s", got, req.Payload)
 			}
 			return pluginapi.ExecutorResponse{Payload: []byte(`{}`)}, nil
@@ -254,7 +254,7 @@ func TestExecutorAdapterAllExecutionModesUsePreparedPayload(t *testing.T) {
 	}}}}
 	seen := make(map[string]float64)
 	check := func(mode string, req pluginapi.ExecutorRequest) {
-		seen[mode] = gjson.GetBytes(req.Payload, "temperature").Float()
+		seen[mode] = ojson.GetBytes(req.Payload, "temperature").Float()
 	}
 	adapter := newCurrentExecutorAdapterForTest(host, "prepared-payload-executor", &fakeExecutor{
 		execute: func(_ context.Context, req pluginapi.ExecutorRequest) (pluginapi.ExecutorResponse, error) {

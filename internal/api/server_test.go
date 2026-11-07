@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	gin "github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -43,7 +44,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
-	"github.com/tidwall/gjson"
 	"gopkg.in/yaml.v3"
 )
 
@@ -2159,6 +2159,9 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 		{ID: "gpt-image-2.5-flare", Object: "model", OwnedBy: "openai", Type: "openai"},
 		{ID: "gpt-image-2.5-sunburst", Object: "model", OwnedBy: "openai", Type: "openai"},
 		{ID: "gpt-image-2.5", Object: "model", OwnedBy: "openai", Type: "openai"},
+		{ID: "gpt-image-2.6-flare", Object: "model", OwnedBy: "openai", Type: "openai"},
+		{ID: "gpt-image-2.6-sunburst", Object: "model", OwnedBy: "openai", Type: "openai"},
+		{ID: "gpt-image-2.6", Object: "model", OwnedBy: "openai", Type: "openai"},
 		{ID: "grok-imagine-image", Object: "model", OwnedBy: "xai", Type: "openai"},
 		{ID: "grok-imagine-image-2.0", Object: "model", OwnedBy: "xai", Type: "openai"},
 		{ID: "grok-imagine-video", Object: "model", OwnedBy: "xai", Type: "openai"},
@@ -2275,6 +2278,9 @@ func TestModelsWithClientVersionReturnsCodexCatalog(t *testing.T) {
 		"gpt-image-2.5-flare":            false,
 		"gpt-image-2.5-sunburst":         false,
 		"gpt-image-2.5":                  false,
+		"gpt-image-2.6-flare":            false,
+		"gpt-image-2.6-sunburst":         false,
+		"gpt-image-2.6":                  false,
 		"grok-imagine-image":             false,
 		"grok-imagine-image-2.0":         false,
 		"grok-imagine-video":             false,
@@ -3940,7 +3946,7 @@ func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 	if errRead1 != nil {
 		t.Fatalf("read turn 1: %v", errRead1)
 	}
-	if got := gjson.GetBytes(msg1, "type").String(); got != "response.completed" {
+	if got := ojson.GetBytesNoCopy(msg1, "type").String(); got != "response.completed" {
 		t.Fatalf("turn 1 event type = %q, want response.completed (%s)", got, msg1)
 	}
 
@@ -3972,13 +3978,50 @@ func TestServerResponsesWebsocketReauthorizesEachTurn(t *testing.T) {
 	if errRead2 != nil {
 		t.Fatalf("read turn 2: %v", errRead2)
 	}
-	if got := gjson.GetBytes(msg2, "type").String(); got != "error" {
+	if got := ojson.GetBytesNoCopy(msg2, "type").String(); got != "error" {
 		t.Fatalf("turn 2 event type = %q, want error (%s)", got, msg2)
 	}
-	if got := int(gjson.GetBytes(msg2, "status").Int()); got != http.StatusUnauthorized {
+	if got := int(ojson.GetBytesNoCopy(msg2, "status").Int()); got != http.StatusUnauthorized {
 		t.Fatalf("turn 2 error status = %d, want %d (%s)", got, http.StatusUnauthorized, msg2)
 	}
 	if gotCalls := wsExec.calls.Load(); gotCalls != 1 {
 		t.Fatalf("executor calls after revoked turn = %d, want 1", gotCalls)
+	}
+
+	// The hijacked socket's error log is written after the handler returns, which
+	// httptest.Server.Close does not wait for; let it settle before TempDir cleanup.
+	_ = conn.Close()
+	waitForRequestLogsToSettle(t, filepath.Join(server.cfg.AuthDir, "logs"))
+}
+
+func waitForRequestLogsToSettle(t *testing.T, dir string) {
+	t.Helper()
+	snapshot := func() string {
+		entries, errRead := os.ReadDir(dir)
+		if errRead != nil {
+			return ""
+		}
+		var b strings.Builder
+		for _, entry := range entries {
+			info, errInfo := entry.Info()
+			if errInfo != nil {
+				continue
+			}
+			fmt.Fprintf(&b, "%s:%d;", entry.Name(), info.Size())
+		}
+		return b.String()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	previous, stableSince := snapshot(), time.Now()
+	for time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+		current := snapshot()
+		if current != previous || strings.Contains(current, ".tmp:") {
+			previous, stableSince = current, time.Now()
+			continue
+		}
+		if strings.Contains(current, "error-") && time.Since(stableSince) >= 100*time.Millisecond {
+			return
+		}
 	}
 }

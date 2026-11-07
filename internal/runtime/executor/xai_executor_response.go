@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // xAI executes these x_search subtools server-side but exposes their trace as
@@ -37,13 +37,51 @@ func newXAIInternalXSearchResponseFilter(enabled bool, clientDeclaredTools map[x
 	return filter
 }
 
+func xaiToolsArrayHasNativeXSearch(tools ojson.Result) bool {
+	if !tools.IsArray() {
+		return false
+	}
+	for _, tool := range tools.Array() {
+		if tool.Get("type").String() == "x_search" {
+			return true
+		}
+	}
+	return false
+}
+
 func xaiRequestHasNativeXSearch(body []byte) bool {
-	if gjson.GetBytes(body, `tools.#(type=="x_search")`).Exists() {
+	if xaiToolsArrayHasNativeXSearch(ojson.GetBytesNoCopy(body, "tools")) {
 		return true
 	}
-	// Multipath queries return an array of matches; an empty array still Exists().
-	// Check the match count instead of Exists() for additional_tools injection.
-	return len(gjson.GetBytes(body, `input.#(type=="additional_tools")#.tools.#(type=="x_search")`).Array()) > 0
+	input := ojson.GetBytesNoCopy(body, "input")
+	if !input.IsArray() {
+		return false
+	}
+	for _, item := range input.Array() {
+		if item.Get("type").String() == "additional_tools" && xaiToolsArrayHasNativeXSearch(item.Get("tools")) {
+			return true
+		}
+	}
+	return false
+}
+
+func xaiRequestHasNativeXSearchDoc(doc *ojson.Doc) bool {
+	if doc == nil {
+		return false
+	}
+	if xaiToolsArrayHasNativeXSearch(doc.Get("tools")) {
+		return true
+	}
+	input := doc.Get("input")
+	if !input.IsArray() {
+		return false
+	}
+	for _, item := range input.Array() {
+		if item.Get("type").String() == "additional_tools" && xaiToolsArrayHasNativeXSearch(item.Get("tools")) {
+			return true
+		}
+	}
+	return false
 }
 
 // collectXAIClientDeclaredToolKeys records client-declared function/custom tools
@@ -52,8 +90,19 @@ func xaiRequestHasNativeXSearch(body []byte) bool {
 // are normalized to function before being sent to xAI, so keys use function for
 // both declaration kinds. Must run before normalizeXAITools flattens namespace wrappers.
 func collectXAIClientDeclaredToolKeys(body []byte) map[xaiClientToolKey]struct{} {
+	return collectXAIClientDeclaredToolKeysResults(ojson.GetBytesNoCopy(body, "tools"), ojson.GetBytesNoCopy(body, "input"))
+}
+
+func collectXAIClientDeclaredToolKeysDoc(doc *ojson.Doc) map[xaiClientToolKey]struct{} {
+	if doc == nil {
+		return make(map[xaiClientToolKey]struct{})
+	}
+	return collectXAIClientDeclaredToolKeysResults(doc.Get("tools"), doc.Get("input"))
+}
+
+func collectXAIClientDeclaredToolKeysResults(toolsResult, inputResult ojson.Result) map[xaiClientToolKey]struct{} {
 	keys := make(map[xaiClientToolKey]struct{})
-	collect := func(tools gjson.Result) {
+	collect := func(tools ojson.Result) {
 		if !tools.Exists() || !tools.IsArray() {
 			return
 		}
@@ -86,10 +135,9 @@ func collectXAIClientDeclaredToolKeys(body []byte) map[xaiClientToolKey]struct{}
 			}
 		}
 	}
-	collect(gjson.GetBytes(body, "tools"))
-	input := gjson.GetBytes(body, "input")
-	if input.Exists() && input.IsArray() {
-		for _, item := range input.Array() {
+	collect(toolsResult)
+	if inputResult.Exists() && inputResult.IsArray() {
+		for _, item := range inputResult.Array() {
 			if item.Get("type").String() == "additional_tools" {
 				collect(item.Get("tools"))
 			}
@@ -153,7 +201,7 @@ func xaiIsInternalXSearchCallID(callID string) bool {
 // function and therefore preserves function_call while still filtering genuine
 // internal custom_tool_call / xs_call* traces. Namespaced restored client tools
 // are never treated as internal.
-func xaiIsInternalXSearchCall(item gjson.Result, clientDeclaredTools map[xaiClientToolKey]struct{}) bool {
+func xaiIsInternalXSearchCall(item ojson.Result, clientDeclaredTools map[xaiClientToolKey]struct{}) bool {
 	itemType := strings.TrimSpace(item.Get("type").String())
 	declaredType := xaiResponseCallDeclaredType(itemType)
 	if declaredType == "" {
@@ -182,11 +230,11 @@ func xaiIsInternalXSearchCall(item gjson.Result, clientDeclaredTools map[xaiClie
 }
 
 func (f *xaiInternalXSearchResponseFilter) apply(eventData []byte) []byte {
-	if f == nil || !f.enabled || len(eventData) == 0 || !gjson.ValidBytes(eventData) {
+	if f == nil || !f.enabled || len(eventData) == 0 || !ojson.ValidBytes(eventData) {
 		return eventData
 	}
 
-	if item := gjson.GetBytes(eventData, "item"); xaiIsInternalXSearchCall(item, f.clientDeclaredTools) {
+	if item := ojson.GetBytesNoCopy(eventData, "item"); xaiIsInternalXSearchCall(item, f.clientDeclaredTools) {
 		f.recordDroppedItem(eventData, item)
 		return nil
 	}
@@ -198,25 +246,25 @@ func (f *xaiInternalXSearchResponseFilter) apply(eventData []byte) []byte {
 	return f.compactOutputIndex(eventData)
 }
 
-func (f *xaiInternalXSearchResponseFilter) recordDroppedItem(eventData []byte, item gjson.Result) {
-	if outputIndex := gjson.GetBytes(eventData, "output_index"); outputIndex.Exists() {
+func (f *xaiInternalXSearchResponseFilter) recordDroppedItem(eventData []byte, item ojson.Result) {
+	if outputIndex := ojson.GetBytesNoCopy(eventData, "output_index"); outputIndex.Exists() {
 		f.droppedOutputIndexes[outputIndex.Int()] = struct{}{}
 	}
 	for _, path := range []string{"id", "call_id"} {
 		if id := strings.TrimSpace(item.Get(path).String()); id != "" {
-			f.droppedItemIDs[id] = struct{}{}
+			f.droppedItemIDs[strings.Clone(id)] = struct{}{}
 		}
 	}
 }
 
 func (f *xaiInternalXSearchResponseFilter) referencesDroppedItem(eventData []byte) bool {
-	if outputIndex := gjson.GetBytes(eventData, "output_index"); outputIndex.Exists() {
+	if outputIndex := ojson.GetBytesNoCopy(eventData, "output_index"); outputIndex.Exists() {
 		if _, dropped := f.droppedOutputIndexes[outputIndex.Int()]; dropped {
 			return true
 		}
 	}
 	for _, path := range []string{"item_id", "call_id"} {
-		id := strings.TrimSpace(gjson.GetBytes(eventData, path).String())
+		id := strings.TrimSpace(ojson.GetBytesNoCopy(eventData, path).String())
 		if _, dropped := f.droppedItemIDs[id]; id != "" && dropped {
 			return true
 		}
@@ -225,7 +273,7 @@ func (f *xaiInternalXSearchResponseFilter) referencesDroppedItem(eventData []byt
 }
 
 func (f *xaiInternalXSearchResponseFilter) compactOutputIndex(eventData []byte) []byte {
-	outputIndex := gjson.GetBytes(eventData, "output_index")
+	outputIndex := ojson.GetBytesNoCopy(eventData, "output_index")
 	if !outputIndex.Exists() {
 		return eventData
 	}
@@ -239,7 +287,7 @@ func (f *xaiInternalXSearchResponseFilter) compactOutputIndex(eventData []byte) 
 	if removedBefore == 0 {
 		return eventData
 	}
-	updated, errSet := sjson.SetBytes(eventData, "output_index", original-removedBefore)
+	updated, errSet := ojson.SetBytes(eventData, "output_index", original-removedBefore)
 	if errSet != nil {
 		return eventData
 	}
@@ -247,7 +295,7 @@ func (f *xaiInternalXSearchResponseFilter) compactOutputIndex(eventData []byte) 
 }
 
 func (f *xaiInternalXSearchResponseFilter) filterCompletedOutput(eventData []byte) []byte {
-	output := gjson.GetBytes(eventData, "response.output")
+	output := ojson.GetBytesNoCopy(eventData, "response.output")
 	if !output.IsArray() {
 		return eventData
 	}
@@ -271,7 +319,7 @@ func (f *xaiInternalXSearchResponseFilter) filterCompletedOutput(eventData []byt
 	if errMarshal != nil {
 		return eventData
 	}
-	updated, errSet := sjson.SetRawBytes(eventData, "response.output", rawOutput)
+	updated, errSet := ojson.SetRawBytes(eventData, "response.output", rawOutput)
 	if errSet != nil {
 		return eventData
 	}
@@ -287,18 +335,43 @@ func normalizeXAIInputNamespaceToolCalls(body []byte) []byte {
 	return normalizeXAIInputNamespaceToolCallsWithFoldAndRefs(body, shouldFold, refs)
 }
 
+func normalizeXAIInputNamespaceToolCallsDoc(doc *ojson.Doc) bool {
+	shouldFold := xaiShouldFoldNamespaceToolsDoc(doc, false)
+	var refs map[string]xaiNamespaceToolRef
+	if shouldFold {
+		refs = collectXAINamespaceToolRefsWithFoldDoc(doc, shouldFold)
+	}
+	return normalizeXAIInputNamespaceToolCallsWithFoldAndRefsDoc(doc, shouldFold, refs)
+}
+
 func normalizeXAIInputNamespaceToolCallsWithFold(body []byte, shouldFold bool) []byte {
 	return normalizeXAIInputNamespaceToolCallsWithFoldAndRefs(body, shouldFold, nil)
 }
 
 func normalizeXAIInputNamespaceToolCallsWithFoldAndRefs(body []byte, shouldFold bool, refs map[string]xaiNamespaceToolRef) []byte {
-	if !gjson.ValidBytes(body) {
+	if !ojson.ValidBytes(body) {
 		return body
 	}
-	input := gjson.GetBytes(body, "input")
+	doc := ojson.NewDoc(body)
+	if !normalizeXAIInputNamespaceToolCallsWithFoldAndRefsDoc(doc, shouldFold, refs) {
+		return body
+	}
+	return doc.Bytes()
+}
+
+func normalizeXAIInputNamespaceToolCallsWithFoldDoc(doc *ojson.Doc, shouldFold bool) bool {
+	return normalizeXAIInputNamespaceToolCallsWithFoldAndRefsDoc(doc, shouldFold, nil)
+}
+
+func normalizeXAIInputNamespaceToolCallsWithFoldAndRefsDoc(doc *ojson.Doc, shouldFold bool, refs map[string]xaiNamespaceToolRef) bool {
+	if doc == nil {
+		return false
+	}
+	input := doc.Get("input")
 	if !input.Exists() || !input.IsArray() {
-		return body
+		return false
 	}
+	changed := false
 	for index, item := range input.Array() {
 		if item.Get("type").String() != "function_call" {
 			continue
@@ -316,9 +389,9 @@ func normalizeXAIInputNamespaceToolCallsWithFoldAndRefs(body []byte, shouldFold 
 		var isFolded bool
 		if dispatcherName != "" {
 			isFolded = true
-		} else if !shouldFold && xaiHasFunctionToolNamed(body, qualifiedName) {
+		} else if !shouldFold && xaiHasFunctionToolNamedDoc(doc, qualifiedName) {
 			isFolded = false
-		} else if xaiHasFunctionToolNamed(body, namespaceName) {
+		} else if xaiHasFunctionToolNamedDoc(doc, namespaceName) {
 			isFolded = true
 		} else {
 			isFolded = shouldFold
@@ -332,7 +405,7 @@ func normalizeXAIInputNamespaceToolCallsWithFoldAndRefs(body []byte, shouldFold 
 				"name": toolName,
 			}
 			if rawArgs := item.Get("arguments").String(); rawArgs != "" {
-				if gjson.Valid(rawArgs) {
+				if ojson.Valid(rawArgs) {
 					dispatcherArgs["arguments"] = json.RawMessage(rawArgs)
 				} else {
 					dispatcherArgs["arguments"] = rawArgs
@@ -347,19 +420,16 @@ func normalizeXAIInputNamespaceToolCallsWithFoldAndRefs(body []byte, shouldFold 
 			if dispatcherName != "" {
 				targetName = dispatcherName
 			}
-			updated, errSet := sjson.SetBytes(body, namePath, targetName)
-			if errSet != nil {
+			if errSet := doc.Set(namePath, targetName); errSet != nil {
 				continue
 			}
-			updated, errSet = sjson.SetBytes(updated, argsPath, string(encodedArgs))
-			if errSet != nil {
+			if errSet := doc.Set(argsPath, string(encodedArgs)); errSet != nil {
 				continue
 			}
-			updated, errDelete := sjson.DeleteBytes(updated, namespacePath)
-			if errDelete != nil {
+			if errDelete := doc.Delete(namespacePath); errDelete != nil {
 				continue
 			}
-			body = updated
+			changed = true
 			continue
 		}
 
@@ -368,17 +438,15 @@ func normalizeXAIInputNamespaceToolCallsWithFoldAndRefs(body []byte, shouldFold 
 		}
 		namePath := fmt.Sprintf("input.%d.name", index)
 		namespacePath := fmt.Sprintf("input.%d.namespace", index)
-		updated, errSet := sjson.SetBytes(body, namePath, qualifiedName)
-		if errSet != nil {
+		if errSet := doc.Set(namePath, qualifiedName); errSet != nil {
 			continue
 		}
-		updated, errDelete := sjson.DeleteBytes(updated, namespacePath)
-		if errDelete != nil {
+		if errDelete := doc.Delete(namespacePath); errDelete != nil {
 			continue
 		}
-		body = updated
+		changed = true
 	}
-	return body
+	return changed
 }
 
 type xaiNamespaceRestorer struct {
@@ -420,13 +488,13 @@ func (r *xaiNamespaceRestorer) restore(data []byte) [][]byte {
 	if len(data) == 0 {
 		return nil
 	}
-	if r == nil || len(r.refs) == 0 || !gjson.ValidBytes(data) {
+	if r == nil || len(r.refs) == 0 || !ojson.ValidBytes(data) {
 		return [][]byte{data}
 	}
-	eventType := gjson.GetBytes(data, "type").String()
+	eventType := ojson.GetBytesNoCopy(data, "type").String()
 	switch eventType {
 	case "response.output_item.added":
-		item := gjson.GetBytes(data, "item")
+		item := ojson.GetBytesNoCopy(data, "item")
 		if item.Get("type").String() == "function_call" {
 			name := strings.TrimSpace(item.Get("name").String())
 			if ref, ok := r.refs[name]; ok && ref.isDispatcher {
@@ -446,7 +514,7 @@ func (r *xaiNamespaceRestorer) restore(data []byte) [][]byte {
 		if item.firstDelta == nil {
 			item.firstDelta = bytes.Clone(data)
 		}
-		item.deltaBuffer = append(item.deltaBuffer, gjson.GetBytes(data, "delta").String()...)
+		item.deltaBuffer = append(item.deltaBuffer, ojson.GetBytes(data, "delta").String()...)
 		childName, childArgs, ok := unwrapXAIDispatcherArguments(string(item.deltaBuffer), item.namespace, r.refs)
 		if !ok {
 			return nil
@@ -458,12 +526,12 @@ func (r *xaiNamespaceRestorer) restore(data []byte) [][]byte {
 		if item == nil {
 			return [][]byte{data}
 		}
-		childName, childArgs, ok := unwrapXAIDispatcherArguments(gjson.GetBytes(data, "arguments").String(), item.namespace, r.refs)
+		childName, childArgs, ok := unwrapXAIDispatcherArguments(ojson.GetBytes(data, "arguments").String(), item.namespace, r.refs)
 		if !ok {
 			return nil
 		}
 		events := r.emitDispatcherIdentity(item, childName, childArgs)
-		if updated, errSet := sjson.SetBytes(data, "arguments", string(childArgs)); errSet == nil {
+		if updated, errSet := ojson.SetBytes(data, "arguments", string(childArgs)); errSet == nil {
 			data = updated
 		}
 		return append(events, data)
@@ -473,14 +541,14 @@ func (r *xaiNamespaceRestorer) restore(data []byte) [][]byte {
 		item := r.dispatcherItems[key]
 		events := make([][]byte, 0, 3)
 		if item != nil && !item.identified {
-			if childName, childArgs, ok := unwrapXAIDispatcherArguments(gjson.GetBytes(data, "item.arguments").String(), item.namespace, r.refs); ok {
+			if childName, childArgs, ok := unwrapXAIDispatcherArguments(ojson.GetBytes(data, "item.arguments").String(), item.namespace, r.refs); ok {
 				events = append(events, r.emitDispatcherIdentity(item, childName, childArgs)...)
 			}
 		}
 		if item != nil && item.identified {
-			data, _ = sjson.SetBytes(data, "item.name", item.childName)
-			data, _ = sjson.SetBytes(data, "item.namespace", item.namespace)
-			data, _ = sjson.SetBytes(data, "item.arguments", string(item.childArgs))
+			data, _ = ojson.SetBytes(data, "item.name", item.childName)
+			data, _ = ojson.SetBytes(data, "item.namespace", item.namespace)
+			data, _ = ojson.SetBytes(data, "item.arguments", string(item.childArgs))
 		} else {
 			data = r.restoreAtPath(data, "item")
 		}
@@ -489,14 +557,20 @@ func (r *xaiNamespaceRestorer) restore(data []byte) [][]byte {
 		return events
 
 	default:
-		data = r.restoreAtPath(data, "item")
-		output := gjson.GetBytes(data, "response.output")
+		doc := ojson.NewDoc(data)
+		changed := r.restoreAtPathDoc(doc, "item")
+		output := doc.Get("response.output")
 		if output.Exists() && output.IsArray() {
 			for index := range output.Array() {
-				data = r.restoreAtPath(data, fmt.Sprintf("response.output.%d", index))
+				if r.restoreAtPathDoc(doc, fmt.Sprintf("response.output.%d", index)) {
+					changed = true
+				}
 			}
 		}
-		return [][]byte{data}
+		if !changed {
+			return [][]byte{data}
+		}
+		return [][]byte{doc.Bytes()}
 	}
 }
 
@@ -505,10 +579,10 @@ func xaiDispatcherItemKey(data []byte, itemEvent bool) string {
 	if itemEvent {
 		idPath = "item.id"
 	}
-	if itemID := strings.TrimSpace(gjson.GetBytes(data, idPath).String()); itemID != "" {
+	if itemID := strings.TrimSpace(ojson.GetBytes(data, idPath).String()); itemID != "" {
 		return "id:" + itemID
 	}
-	if outputIndex := gjson.GetBytes(data, "output_index"); outputIndex.Exists() {
+	if outputIndex := ojson.GetBytes(data, "output_index"); outputIndex.Exists() {
 		return "output:" + outputIndex.Raw
 	}
 	return ""
@@ -522,13 +596,13 @@ func (r *xaiNamespaceRestorer) emitDispatcherIdentity(item *xaiDispatcherItem, c
 	item.childName = childName
 	item.childArgs = bytes.Clone(childArgs)
 	events := make([][]byte, 0, 2)
-	if added, errName := sjson.SetBytes(item.added, "item.name", childName); errName == nil {
-		if added, errNamespace := sjson.SetBytes(added, "item.namespace", item.namespace); errNamespace == nil {
+	if added, errName := ojson.SetBytes(item.added, "item.name", childName); errName == nil {
+		if added, errNamespace := ojson.SetBytes(added, "item.namespace", item.namespace); errNamespace == nil {
 			events = append(events, added)
 		}
 	}
 	if len(item.firstDelta) > 0 {
-		if delta, errSet := sjson.SetBytes(item.firstDelta, "delta", string(childArgs)); errSet == nil {
+		if delta, errSet := ojson.SetBytes(item.firstDelta, "delta", string(childArgs)); errSet == nil {
 			events = append(events, delta)
 		}
 	}
@@ -536,55 +610,56 @@ func (r *xaiNamespaceRestorer) emitDispatcherIdentity(item *xaiDispatcherItem, c
 }
 
 func (r *xaiNamespaceRestorer) restoreAtPath(data []byte, path string) []byte {
-	if gjson.GetBytes(data, path+".type").String() != "function_call" {
+	doc := ojson.NewDoc(data)
+	if !r.restoreAtPathDoc(doc, path) {
 		return data
 	}
-	qualifiedName := strings.TrimSpace(gjson.GetBytes(data, path+".name").String())
+	return doc.Bytes()
+}
+
+func (r *xaiNamespaceRestorer) restoreAtPathDoc(doc *ojson.Doc, path string) bool {
+	if doc == nil || doc.Get(path+".type").String() != "function_call" {
+		return false
+	}
+	qualifiedName := strings.TrimSpace(doc.Get(path + ".name").String())
 	ref, ok := r.refs[qualifiedName]
 	if !ok {
-		return data
+		return false
 	}
 	if ref.isDispatcher {
-		rawArgs := gjson.GetBytes(data, path+".arguments").String()
+		rawArgs := doc.Get(path + ".arguments").String()
 		childName, childArgs, unwrapped := unwrapXAIDispatcherArguments(rawArgs, ref.namespace, r.refs)
 		if !unwrapped && childName == "" {
 			childName = ref.name
 		}
-		updated, errSet := sjson.SetBytes(data, path+".namespace", ref.namespace)
-		if errSet != nil {
-			return data
+		if errSet := doc.Set(path+".namespace", ref.namespace); errSet != nil {
+			return false
 		}
 		if childName != "" {
-			if updatedName, errSetName := sjson.SetBytes(updated, path+".name", childName); errSetName == nil {
-				updated = updatedName
-			}
+			_ = doc.Set(path+".name", childName)
 		}
 		if len(childArgs) > 0 {
-			if updatedArgs, errSetArgs := sjson.SetBytes(updated, path+".arguments", string(childArgs)); errSetArgs == nil {
-				updated = updatedArgs
-			}
+			_ = doc.Set(path+".arguments", string(childArgs))
 		}
-		return updated
+		return true
 	}
 
-	updated, errSet := sjson.SetBytes(data, path+".name", ref.name)
-	if errSet != nil {
-		return data
+	if errSet := doc.Set(path+".name", ref.name); errSet != nil {
+		return false
 	}
-	updated, errSet = sjson.SetBytes(updated, path+".namespace", ref.namespace)
-	if errSet != nil {
-		return data
+	if errSet := doc.Set(path+".namespace", ref.namespace); errSet != nil {
+		return false
 	}
-	return updated
+	return true
 }
 
 func unwrapXAIDispatcherArguments(rawArgs string, namespaceName string, refs map[string]xaiNamespaceToolRef) (string, []byte, bool) {
-	if !gjson.Valid(rawArgs) {
+	if !ojson.Valid(rawArgs) {
 		return "", nil, false
 	}
-	argsParsed := gjson.Parse(rawArgs)
+	argsParsed := ojson.Parse(rawArgs)
 	nameField := argsParsed.Get("name")
-	if !nameField.Exists() || nameField.Type != gjson.String {
+	if !nameField.Exists() || nameField.Type != ojson.String {
 		return "", nil, false
 	}
 	childName := strings.TrimSpace(nameField.String())
@@ -618,13 +693,13 @@ func unwrapXAIDispatcherArguments(rawArgs string, namespaceName string, refs map
 
 	var childArgs []byte
 	if argsField := argsParsed.Get("arguments"); argsField.Exists() {
-		if argsField.Type == gjson.String {
+		if argsField.Type == ojson.String {
 			childArgs = []byte(argsField.String())
 		} else {
 			childArgs = []byte(argsField.Raw)
 		}
 	} else {
-		cleaned, errDel := sjson.DeleteBytes([]byte(rawArgs), "name")
+		cleaned, errDel := ojson.DeleteBytes([]byte(rawArgs), "name")
 		if errDel == nil && len(cleaned) > 0 && string(cleaned) != "{}" {
 			childArgs = cleaned
 		} else {
@@ -654,74 +729,107 @@ func restoreXAIClientWebSearchName(data []byte, alias string) []byte {
 	if alias == "" || !bytes.Contains(data, []byte(alias)) {
 		return data
 	}
-	if !gjson.ValidBytes(data) {
+	if !ojson.ValidBytes(data) {
 		return data
 	}
+	doc := ojson.NewDoc(data)
+	changed := false
 
 	// Check item (e.g. response.output_item.added / response.output_item.done)
-	if strings.TrimSpace(gjson.GetBytes(data, "item.namespace").String()) == "" {
-		if strings.TrimSpace(gjson.GetBytes(data, "item.name").String()) == alias {
-			data, _ = sjson.SetBytes(data, "item.name", xaiWebSearchToolType)
+	if strings.TrimSpace(doc.Get("item.namespace").String()) == "" {
+		if strings.TrimSpace(doc.Get("item.name").String()) == alias {
+			if doc.Set("item.name", xaiWebSearchToolType) == nil {
+				changed = true
+			}
 		}
-		if strings.TrimSpace(gjson.GetBytes(data, "item.function.name").String()) == alias {
-			data, _ = sjson.SetBytes(data, "item.function.name", xaiWebSearchToolType)
+		if strings.TrimSpace(doc.Get("item.function.name").String()) == alias {
+			if doc.Set("item.function.name", xaiWebSearchToolType) == nil {
+				changed = true
+			}
 		}
 	}
 
 	// Check response.output array (e.g. response.completed / response.incomplete)
-	respOutput := gjson.GetBytes(data, "response.output")
+	respOutput := doc.Get("response.output")
 	if respOutput.IsArray() {
 		for idx, item := range respOutput.Array() {
 			if strings.TrimSpace(item.Get("namespace").String()) != "" {
 				continue
 			}
 			if strings.TrimSpace(item.Get("name").String()) == alias {
-				data, _ = sjson.SetBytes(data, fmt.Sprintf("response.output.%d.name", idx), xaiWebSearchToolType)
+				if doc.Set(fmt.Sprintf("response.output.%d.name", idx), xaiWebSearchToolType) == nil {
+					changed = true
+				}
 			}
 			if strings.TrimSpace(item.Get("function.name").String()) == alias {
-				data, _ = sjson.SetBytes(data, fmt.Sprintf("response.output.%d.function.name", idx), xaiWebSearchToolType)
+				if doc.Set(fmt.Sprintf("response.output.%d.function.name", idx), xaiWebSearchToolType) == nil {
+					changed = true
+				}
 			}
 		}
 	}
 
 	// Check top-level output array (non-stream responses translated)
-	topOutput := gjson.GetBytes(data, "output")
+	topOutput := doc.Get("output")
 	if topOutput.IsArray() {
 		for idx, item := range topOutput.Array() {
 			if strings.TrimSpace(item.Get("namespace").String()) != "" {
 				continue
 			}
 			if strings.TrimSpace(item.Get("name").String()) == alias {
-				data, _ = sjson.SetBytes(data, fmt.Sprintf("output.%d.name", idx), xaiWebSearchToolType)
+				if doc.Set(fmt.Sprintf("output.%d.name", idx), xaiWebSearchToolType) == nil {
+					changed = true
+				}
 			}
 			if strings.TrimSpace(item.Get("function.name").String()) == alias {
-				data, _ = sjson.SetBytes(data, fmt.Sprintf("output.%d.function.name", idx), xaiWebSearchToolType)
+				if doc.Set(fmt.Sprintf("output.%d.function.name", idx), xaiWebSearchToolType) == nil {
+					changed = true
+				}
 			}
 		}
 	}
 
 	// Check top-level name
-	if strings.TrimSpace(gjson.GetBytes(data, "namespace").String()) == "" {
-		if strings.TrimSpace(gjson.GetBytes(data, "name").String()) == alias {
-			data, _ = sjson.SetBytes(data, "name", xaiWebSearchToolType)
+	if strings.TrimSpace(doc.Get("namespace").String()) == "" {
+		if strings.TrimSpace(doc.Get("name").String()) == alias {
+			if doc.Set("name", xaiWebSearchToolType) == nil {
+				changed = true
+			}
 		}
 	}
 
-	return data
+	if !changed {
+		return data
+	}
+	return doc.Bytes()
 }
 
 // normalizeXAIObjectRootUnionBranchTypes makes untyped root union branches
 // explicitly object-only when the parameter root already permits only objects.
 // This preserves the original schema semantics while satisfying xAI validation.
 func normalizeXAIObjectRootUnionBranchTypes(tool []byte) ([]byte, bool, bool) {
-	parameters := gjson.GetBytes(tool, "parameters")
-	rootType := parameters.Get("type")
-	if rootType.Type != gjson.String || rootType.String() != "object" {
+	doc := ojson.NewDoc(tool)
+	changed, ok := normalizeXAIObjectRootUnionBranchTypesDoc(doc)
+	if !ok {
+		return tool, false, false
+	}
+	if !changed {
 		return tool, false, true
 	}
+	return doc.Bytes(), true, true
+}
 
-	original := tool
-	changed := false
+func normalizeXAIObjectRootUnionBranchTypesDoc(doc *ojson.Doc) (bool, bool) {
+	if doc == nil {
+		return false, false
+	}
+	parameters := doc.Get("parameters")
+	rootType := parameters.Get("type")
+	if rootType.Type != ojson.String || rootType.String() != "object" {
+		return false, true
+	}
+
+	var paths []string
 	for _, unionName := range []string{"anyOf", "oneOf"} {
 		union := parameters.Get(unionName)
 		if !union.IsArray() {
@@ -731,19 +839,22 @@ func normalizeXAIObjectRootUnionBranchTypes(tool []byte) ([]byte, bool, bool) {
 			if !branch.IsObject() || branch.Get("type").Exists() || branch.Get("$ref").Exists() {
 				continue
 			}
-			updated, errSet := sjson.SetBytes(tool, fmt.Sprintf("parameters.%s.%d.type", unionName, index), "object")
-			if errSet != nil {
-				return original, false, false
-			}
-			tool = updated
-			changed = true
+			paths = append(paths, fmt.Sprintf("parameters.%s.%d.type", unionName, index))
 		}
 	}
-	return tool, changed, true
+	if len(paths) == 0 {
+		return false, true
+	}
+	for _, p := range paths {
+		if errSet := doc.Set(p, "object"); errSet != nil {
+			return false, false
+		}
+	}
+	return true, true
 }
 
-func xaiSchemaTypeIsObjectOnly(schemaType gjson.Result) bool {
-	if schemaType.Type == gjson.String {
+func xaiSchemaTypeIsObjectOnly(schemaType ojson.Result) bool {
+	if schemaType.Type == ojson.String {
 		return strings.EqualFold(strings.TrimSpace(schemaType.String()), "object")
 	}
 	if !schemaType.IsArray() {
@@ -754,7 +865,7 @@ func xaiSchemaTypeIsObjectOnly(schemaType gjson.Result) bool {
 		return false
 	}
 	for _, schemaTypeItem := range types {
-		if schemaTypeItem.Type != gjson.String || !strings.EqualFold(strings.TrimSpace(schemaTypeItem.String()), "object") {
+		if schemaTypeItem.Type != ojson.String || !strings.EqualFold(strings.TrimSpace(schemaTypeItem.String()), "object") {
 			return false
 		}
 	}
@@ -775,20 +886,23 @@ func isXAICodexAppAutomationUpdate(toolName, namespaceName string) bool {
 
 // xaiFunctionParametersNeedSimplification reports whether a function tool, or
 // a custom tool normalized to a function, has a schema that xAI cannot accept.
-func xaiFunctionParametersNeedSimplification(tool gjson.Result, namespaceName string) bool {
-	toolType := strings.TrimSpace(tool.Get("type").String())
+func xaiFunctionParametersNeedSimplification(tool ojson.Result, namespaceName string) bool {
+	return xaiFunctionParametersNeedSimplificationFields(tool.Get("type").String(), tool.Get("name").String(), tool.Get("parameters"), namespaceName)
+}
+
+func xaiFunctionParametersNeedSimplificationFields(toolType, toolName string, parameters ojson.Result, namespaceName string) bool {
+	toolType = strings.TrimSpace(toolType)
 	isFunction := strings.EqualFold(toolType, xaiFunctionToolType)
 	isNormalizedCustom := strings.EqualFold(toolType, xaiCustomToolType)
 	if !isFunction && !isNormalizedCustom {
 		return false
 	}
 
-	toolName := strings.TrimSpace(tool.Get("name").String())
+	toolName = strings.TrimSpace(toolName)
 	if isFunction && isXAICodexAppAutomationUpdate(toolName, namespaceName) {
 		return true
 	}
 
-	parameters := tool.Get("parameters")
 	for _, unionName := range []string{"anyOf", "oneOf"} {
 		union := parameters.Get(unionName)
 		if !union.IsArray() {
@@ -807,14 +921,33 @@ func sanitizeXAIInputEncryptedContent(body []byte) []byte {
 	return sanitizeXAIInputEncryptedContentWithOptions(body, false)
 }
 
+func sanitizeXAIInputEncryptedContentDoc(doc *ojson.Doc) bool {
+	return sanitizeXAIInputEncryptedContentWithOptionsDoc(doc, false)
+}
+
 func sanitizeXAIInputEncryptedContentForBaseURL(body []byte, baseURL string) []byte {
 	return sanitizeXAIInputEncryptedContentWithOptions(body, isOpenRouterUpstreamURL(baseURL))
 }
 
+func sanitizeXAIInputEncryptedContentForBaseURLDoc(doc *ojson.Doc, baseURL string) bool {
+	return sanitizeXAIInputEncryptedContentWithOptionsDoc(doc, isOpenRouterUpstreamURL(baseURL))
+}
+
 func sanitizeXAIInputEncryptedContentWithOptions(body []byte, allowRouterSuffix bool) []byte {
-	input := gjson.GetBytes(body, "input")
-	if !input.Exists() || !input.IsArray() {
+	doc := ojson.NewDoc(body)
+	if !sanitizeXAIInputEncryptedContentWithOptionsDoc(doc, allowRouterSuffix) {
 		return body
+	}
+	return doc.Bytes()
+}
+
+func sanitizeXAIInputEncryptedContentWithOptionsDoc(doc *ojson.Doc, allowRouterSuffix bool) bool {
+	if doc == nil {
+		return false
+	}
+	input := doc.Get("input")
+	if !input.Exists() || !input.IsArray() {
+		return false
 	}
 	items := make([]json.RawMessage, 0, len(input.Array()))
 	changed := false
@@ -835,21 +968,21 @@ func sanitizeXAIInputEncryptedContentWithOptions(body []byte, allowRouterSuffix 
 		reason := ""
 		rewrittenSig := ""
 		switch encryptedContent.Type {
-		case gjson.String:
+		case ojson.String:
 			rawSig := encryptedContent.String()
 			if info, err := signature.InspectGrokEncryptedContent(rawSig); err != nil {
 				reason = err.Error()
 			} else if info.RouterSuffix != "" && !allowRouterSuffix {
 				rewrittenSig = stripRouterSuffix(rawSig, info.RouterSuffix)
 			}
-		case gjson.Null:
+		case ojson.Null:
 			reason = "encrypted_content is null"
 		default:
 			reason = fmt.Sprintf("encrypted_content must be a string, got %s", encryptedContent.Type.String())
 		}
 		if reason == "" {
 			if rewrittenSig != "" {
-				if next, errSet := sjson.SetBytes([]byte(item.Raw), "encrypted_content", rewrittenSig); errSet == nil {
+				if next, errSet := ojson.SetBytes([]byte(item.Raw), "encrypted_content", rewrittenSig); errSet == nil {
 					items = append(items, json.RawMessage(next))
 					changed = true
 					continue
@@ -869,7 +1002,7 @@ func sanitizeXAIInputEncryptedContentWithOptions(body []byte, allowRouterSuffix 
 			continue
 		}
 
-		next, err := sjson.DeleteBytes([]byte(item.Raw), "encrypted_content")
+		next, err := ojson.DeleteBytes([]byte(item.Raw), "encrypted_content")
 		if err != nil {
 			items = append(items, json.RawMessage(item.Raw))
 			continue
@@ -883,15 +1016,14 @@ func sanitizeXAIInputEncryptedContentWithOptions(body []byte, allowRouterSuffix 
 		}
 	}
 	if !changed {
-		return body
+		return false
 	}
 	rawInput, err := json.Marshal(items)
 	if err != nil {
-		return body
+		return false
 	}
-	updated, err := sjson.SetRawBytes(body, "input", rawInput)
-	if err != nil {
-		return body
+	if errSet := doc.SetRawBytes("input", rawInput); errSet != nil {
+		return false
 	}
 	if dropCount > 0 {
 		log.WithFields(log.Fields{
@@ -901,44 +1033,67 @@ func sanitizeXAIInputEncryptedContentWithOptions(body []byte, allowRouterSuffix 
 			"first_reason":    firstReason,
 		}).Debug("xai executor: removed invalid encrypted_content before upstream")
 	}
-	return mergeAdjacentXAIInputReasoningSummaries(updated)
+	mergeAdjacentXAIInputReasoningSummariesDoc(doc)
+	return true
 }
 
 func normalizeXAIInputReasoningItems(body []byte) []byte {
-	input := gjson.GetBytes(body, "input")
-	if !input.Exists() || !input.IsArray() {
+	doc := ojson.NewDoc(body)
+	if !normalizeXAIInputReasoningItemsDoc(doc) {
 		return body
 	}
+	return doc.Bytes()
+}
 
-	updated := body
+func normalizeXAIInputReasoningItemsDoc(doc *ojson.Doc) bool {
+	if doc == nil {
+		return false
+	}
+	input := doc.Get("input")
+	if !input.Exists() || !input.IsArray() {
+		return false
+	}
+
+	var deletePaths []string
 	for i, item := range input.Array() {
 		if item.Get("type").String() != "reasoning" {
 			continue
 		}
-		contentPath := fmt.Sprintf("input.%d.content", i)
-		if content := gjson.GetBytes(updated, contentPath); content.Exists() && content.Type == gjson.Null {
-			updatedBody, errDel := sjson.DeleteBytes(updated, contentPath)
-			if errDel != nil {
-				return body
-			}
-			updated = updatedBody
+		if content := item.Get("content"); content.Exists() && content.Type == ojson.Null {
+			deletePaths = append(deletePaths, fmt.Sprintf("input.%d.content", i))
 		}
-		encryptedContentPath := fmt.Sprintf("input.%d.encrypted_content", i)
-		if encryptedContent := gjson.GetBytes(updated, encryptedContentPath); encryptedContent.Exists() && encryptedContent.Type == gjson.Null {
-			updatedBody, errDel := sjson.DeleteBytes(updated, encryptedContentPath)
-			if errDel != nil {
-				return body
-			}
-			updated = updatedBody
+		if encryptedContent := item.Get("encrypted_content"); encryptedContent.Exists() && encryptedContent.Type == ojson.Null {
+			deletePaths = append(deletePaths, fmt.Sprintf("input.%d.encrypted_content", i))
 		}
 	}
-	return mergeAdjacentXAIInputReasoningSummaries(updated)
+	changed := false
+	for _, p := range deletePaths {
+		if errDel := doc.Delete(p); errDel != nil {
+			return false
+		}
+		changed = true
+	}
+	if mergeAdjacentXAIInputReasoningSummariesDoc(doc) {
+		changed = true
+	}
+	return changed
 }
 
 func mergeAdjacentXAIInputReasoningSummaries(body []byte) []byte {
-	input := gjson.GetBytes(body, "input")
-	if !input.Exists() || !input.IsArray() {
+	doc := ojson.NewDoc(body)
+	if !mergeAdjacentXAIInputReasoningSummariesDoc(doc) {
 		return body
+	}
+	return doc.Bytes()
+}
+
+func mergeAdjacentXAIInputReasoningSummariesDoc(doc *ojson.Doc) bool {
+	if doc == nil {
+		return false
+	}
+	input := doc.Get("input")
+	if !input.Exists() || !input.IsArray() {
+		return false
 	}
 
 	changed := false
@@ -955,22 +1110,18 @@ func mergeAdjacentXAIInputReasoningSummaries(body []byte) []byte {
 		items = append(items, json.RawMessage(item.Raw))
 	}
 	if !changed {
-		return body
+		return false
 	}
 
 	rawInput, errMarshal := json.Marshal(items)
 	if errMarshal != nil {
-		return body
+		return false
 	}
-	updated, errSet := sjson.SetRawBytes(body, "input", rawInput)
-	if errSet != nil {
-		return body
-	}
-	return updated
+	return doc.SetRawBytes("input", rawInput) == nil
 }
 
-func canMergeXAIReasoningSummary(previous json.RawMessage, current gjson.Result) bool {
-	previousItem := gjson.ParseBytes(previous)
+func canMergeXAIReasoningSummary(previous json.RawMessage, current ojson.Result) bool {
+	previousItem := util.ParseGJSONBytesNoCopy(previous)
 	if previousItem.Get("type").String() != "reasoning" || current.Get("type").String() != "reasoning" {
 		return false
 	}
@@ -988,21 +1139,19 @@ func canMergeXAIReasoningSummary(previous json.RawMessage, current gjson.Result)
 	return true
 }
 
-func appendXAIReasoningSummary(previous json.RawMessage, currentSummary []gjson.Result) ([]byte, bool) {
-	updated := []byte(previous)
-	summary := gjson.GetBytes(updated, "summary")
+func appendXAIReasoningSummary(previous json.RawMessage, currentSummary []ojson.Result) ([]byte, bool) {
+	summary := ojson.GetBytesNoCopy(previous, "summary")
 	if !summary.IsArray() {
 		return previous, false
 	}
 	nextIndex := len(summary.Array())
+	doc := ojson.NewDoc(previous)
 	for i, item := range currentSummary {
-		updatedItem, errSet := sjson.SetRawBytes(updated, fmt.Sprintf("summary.%d", nextIndex+i), []byte(item.Raw))
-		if errSet != nil {
+		if errSet := doc.SetRawBytes(fmt.Sprintf("summary.%d", nextIndex+i), []byte(item.Raw)); errSet != nil {
 			return previous, false
 		}
-		updated = updatedItem
 	}
-	return updated, true
+	return doc.Bytes(), true
 }
 
 func xaiNormalizeReasoningSummaryEventLine(line []byte, eventName string) []byte {
@@ -1028,77 +1177,129 @@ func xaiNormalizeReasoningSummaryEventName(eventName string) string {
 }
 
 func xaiNormalizeReasoningSummaryData(eventData []byte) []byte {
-	if len(eventData) == 0 || !gjson.ValidBytes(eventData) {
+	if len(eventData) == 0 || !ojson.ValidBytes(eventData) {
 		return eventData
 	}
 
-	normalized := eventData
-	switch gjson.GetBytes(normalized, "type").String() {
+	doc := ojson.NewDoc(eventData)
+	changed := false
+	switch doc.Get("type").String() {
 	case "response.reasoning_text.delta":
-		normalized, _ = sjson.SetBytes(normalized, "type", "response.reasoning_summary_text.delta")
-		normalized = xaiNormalizeReasoningSummaryIndex(normalized)
-	case "response.reasoning_text.done":
-		normalized, _ = sjson.SetBytes(normalized, "type", "response.reasoning_summary_part.done")
-		normalized, _ = sjson.SetBytes(normalized, "part.type", "summary_text")
-		if text := gjson.GetBytes(normalized, "text"); text.Exists() {
-			normalized, _ = sjson.SetBytes(normalized, "part.text", text.String())
+		if doc.Set("type", "response.reasoning_summary_text.delta") == nil {
+			changed = true
 		}
-		normalized, _ = sjson.DeleteBytes(normalized, "text")
-		normalized = xaiNormalizeReasoningSummaryIndex(normalized)
+		if xaiNormalizeReasoningSummaryIndexDoc(doc) {
+			changed = true
+		}
+	case "response.reasoning_text.done":
+		if doc.Set("type", "response.reasoning_summary_part.done") == nil {
+			changed = true
+		}
+		if doc.Set("part.type", "summary_text") == nil {
+			changed = true
+		}
+		if text := doc.Get("text"); text.Exists() {
+			if doc.Set("part.text", text.String()) == nil {
+				changed = true
+			}
+		}
+		if doc.Delete("text") == nil {
+			changed = true
+		}
+		if xaiNormalizeReasoningSummaryIndexDoc(doc) {
+			changed = true
+		}
 	case "response.content_part.added":
-		if gjson.GetBytes(normalized, "part.type").String() == "reasoning_text" {
-			normalized, _ = sjson.SetBytes(normalized, "type", "response.reasoning_summary_part.added")
-			normalized, _ = sjson.SetBytes(normalized, "part.type", "summary_text")
-			normalized = xaiNormalizeReasoningSummaryIndex(normalized)
+		if doc.Get("part.type").String() == "reasoning_text" {
+			if doc.Set("type", "response.reasoning_summary_part.added") == nil {
+				changed = true
+			}
+			if doc.Set("part.type", "summary_text") == nil {
+				changed = true
+			}
+			if xaiNormalizeReasoningSummaryIndexDoc(doc) {
+				changed = true
+			}
 		}
 	case "response.content_part.done":
-		if gjson.GetBytes(normalized, "part.type").String() == "reasoning_text" {
-			normalized, _ = sjson.SetBytes(normalized, "type", "response.reasoning_summary_part.done")
-			normalized, _ = sjson.SetBytes(normalized, "part.type", "summary_text")
-			normalized = xaiNormalizeReasoningSummaryIndex(normalized)
+		if doc.Get("part.type").String() == "reasoning_text" {
+			if doc.Set("type", "response.reasoning_summary_part.done") == nil {
+				changed = true
+			}
+			if doc.Set("part.type", "summary_text") == nil {
+				changed = true
+			}
+			if xaiNormalizeReasoningSummaryIndexDoc(doc) {
+				changed = true
+			}
 		}
 	}
 
-	if item := gjson.GetBytes(normalized, "item"); item.Exists() && item.Type == gjson.JSON {
+	if item := doc.Get("item"); item.Exists() && item.Type == ojson.JSON {
 		updatedItem := xaiNormalizeReasoningOutputItem([]byte(item.Raw))
 		if !bytes.Equal(updatedItem, []byte(item.Raw)) {
-			normalized, _ = sjson.SetRawBytes(normalized, "item", updatedItem)
+			if doc.SetRawBytes("item", updatedItem) == nil {
+				changed = true
+			}
 		}
 	}
-	if output := gjson.GetBytes(normalized, "response.output"); output.IsArray() {
-		updatedOutput, changed := xaiNormalizeReasoningOutputItems(output.Array())
-		if changed {
-			normalized, _ = sjson.SetRawBytes(normalized, "response.output", updatedOutput)
+	if output := doc.Get("response.output"); output.IsArray() {
+		updatedOutput, outputChanged := xaiNormalizeReasoningOutputItems(output.Array())
+		if outputChanged {
+			if doc.SetRawBytes("response.output", updatedOutput) == nil {
+				changed = true
+			}
 		}
 	}
 
-	return normalized
+	if !changed {
+		return eventData
+	}
+	return doc.Bytes()
 }
 
 func xaiNormalizeReasoningSummaryDataEvents(eventData []byte) [][]byte {
-	if len(eventData) == 0 || !gjson.ValidBytes(eventData) {
+	if len(eventData) == 0 || !ojson.ValidBytes(eventData) {
 		return [][]byte{eventData}
 	}
-	if gjson.GetBytes(eventData, "type").String() != "response.reasoning_text.done" {
+	if ojson.GetBytesNoCopy(eventData, "type").String() != "response.reasoning_text.done" {
 		return [][]byte{xaiNormalizeReasoningSummaryData(eventData)}
 	}
 
-	textDone, _ := sjson.SetBytes(eventData, "type", "response.reasoning_summary_text.done")
-	textDone = xaiNormalizeReasoningSummaryIndex(textDone)
+	textDoneDoc := ojson.NewDoc(eventData)
+	_ = textDoneDoc.Set("type", "response.reasoning_summary_text.done")
+	xaiNormalizeReasoningSummaryIndexDoc(textDoneDoc)
+	textDone := textDoneDoc.Bytes()
 	partDone := xaiNormalizeReasoningSummaryData(eventData)
 	return [][]byte{textDone, partDone}
 }
 
 func xaiNormalizeReasoningSummaryIndex(eventData []byte) []byte {
-	contentIndex := gjson.GetBytes(eventData, "content_index")
-	if contentIndex.Exists() && contentIndex.Raw != "" && !gjson.GetBytes(eventData, "summary_index").Exists() {
-		eventData, _ = sjson.SetRawBytes(eventData, "summary_index", []byte(contentIndex.Raw))
+	doc := ojson.NewDoc(eventData)
+	if !xaiNormalizeReasoningSummaryIndexDoc(doc) {
+		return eventData
 	}
-	eventData, _ = sjson.DeleteBytes(eventData, "content_index")
-	return eventData
+	return doc.Bytes()
 }
 
-func xaiNormalizeReasoningOutputItems(items []gjson.Result) ([]byte, bool) {
+func xaiNormalizeReasoningSummaryIndexDoc(doc *ojson.Doc) bool {
+	if doc == nil {
+		return false
+	}
+	changed := false
+	contentIndex := doc.Get("content_index")
+	if contentIndex.Exists() && contentIndex.Raw != "" && !doc.Get("summary_index").Exists() {
+		if doc.SetRawBytes("summary_index", []byte(contentIndex.Raw)) == nil {
+			changed = true
+		}
+	}
+	if doc.Delete("content_index") == nil {
+		changed = true
+	}
+	return changed
+}
+
+func xaiNormalizeReasoningOutputItems(items []ojson.Result) ([]byte, bool) {
 	var buf bytes.Buffer
 	buf.WriteByte('[')
 	changed := false
@@ -1117,40 +1318,49 @@ func xaiNormalizeReasoningOutputItems(items []gjson.Result) ([]byte, bool) {
 }
 
 func xaiNormalizeReasoningOutputItem(item []byte) []byte {
-	if !gjson.ValidBytes(item) || gjson.GetBytes(item, "type").String() != "reasoning" {
+	if !ojson.ValidBytes(item) || ojson.GetBytesNoCopy(item, "type").String() != "reasoning" {
 		return item
 	}
 
-	normalized := item
-	if summary := gjson.GetBytes(normalized, "summary"); summary.IsArray() {
-		updatedSummary, changed := xaiNormalizeReasoningSummaryItems(summary.Array())
-		if changed {
-			normalized, _ = sjson.SetRawBytes(normalized, "summary", updatedSummary)
+	doc := ojson.NewDoc(item)
+	changed := false
+	if summary := doc.Get("summary"); summary.IsArray() {
+		updatedSummary, summaryChanged := xaiNormalizeReasoningSummaryItems(summary.Array())
+		if summaryChanged {
+			if doc.SetRawBytes("summary", updatedSummary) == nil {
+				changed = true
+			}
 		}
 	}
 
-	content := gjson.GetBytes(normalized, "content")
+	content := doc.Get("content")
 	if !content.IsArray() {
-		return normalized
+		if !changed {
+			return item
+		}
+		return doc.Bytes()
 	}
 
-	summaryItems := make([]gjson.Result, 0, len(content.Array()))
+	summaryItems := make([]ojson.Result, 0, len(content.Array()))
 	for _, part := range content.Array() {
 		if part.Get("type").String() == "reasoning_text" {
 			summaryItems = append(summaryItems, part)
 		}
 	}
 	if len(summaryItems) == 0 {
-		return normalized
+		if !changed {
+			return item
+		}
+		return doc.Bytes()
 	}
 
 	updatedSummary, _ := xaiNormalizeReasoningSummaryItems(summaryItems)
-	normalized, _ = sjson.SetRawBytes(normalized, "summary", updatedSummary)
-	normalized, _ = sjson.DeleteBytes(normalized, "content")
-	return normalized
+	_ = doc.SetRawBytes("summary", updatedSummary)
+	_ = doc.Delete("content")
+	return doc.Bytes()
 }
 
-func xaiNormalizeReasoningSummaryItems(items []gjson.Result) ([]byte, bool) {
+func xaiNormalizeReasoningSummaryItems(items []ojson.Result) ([]byte, bool) {
 	var buf bytes.Buffer
 	buf.WriteByte('[')
 	changed := false
@@ -1161,7 +1371,7 @@ func xaiNormalizeReasoningSummaryItems(items []gjson.Result) ([]byte, bool) {
 		itemRaw := []byte(item.Raw)
 		if item.Get("type").String() == "reasoning_text" {
 			var errSet error
-			itemRaw, errSet = sjson.SetBytes(itemRaw, "type", "summary_text")
+			itemRaw, errSet = ojson.SetBytes(itemRaw, "type", "summary_text")
 			if errSet == nil {
 				changed = true
 			}
@@ -1173,11 +1383,11 @@ func xaiNormalizeReasoningSummaryItems(items []gjson.Result) ([]byte, bool) {
 }
 
 func xaiCollectOutputItemDone(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback *[][]byte) {
-	itemResult := gjson.GetBytes(eventData, "item")
-	if !itemResult.Exists() || itemResult.Type != gjson.JSON {
+	itemResult := ojson.GetBytesNoCopy(eventData, "item")
+	if !itemResult.Exists() || itemResult.Type != ojson.JSON {
 		return
 	}
-	outputIndexResult := gjson.GetBytes(eventData, "output_index")
+	outputIndexResult := ojson.GetBytesNoCopy(eventData, "output_index")
 	if outputIndexResult.Exists() {
 		outputItemsByIndex[outputIndexResult.Int()] = []byte(itemResult.Raw)
 		return
@@ -1187,7 +1397,7 @@ func xaiCollectOutputItemDone(eventData []byte, outputItemsByIndex map[int64][]b
 
 func xaiPatchCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]byte, outputItemsFallback [][]byte) []byte {
 	eventData = helps.EnsureResponsesUsageDetails(eventData)
-	outputResult := gjson.GetBytes(eventData, "response.output")
+	outputResult := ojson.GetBytesNoCopy(eventData, "response.output")
 	shouldPatchOutput := (!outputResult.Exists() || !outputResult.IsArray() || len(outputResult.Array()) == 0) && (len(outputItemsByIndex) > 0 || len(outputItemsFallback) > 0)
 	if !shouldPatchOutput {
 		return eventData
@@ -1224,7 +1434,7 @@ func xaiPatchCompletedOutput(eventData []byte, outputItemsByIndex map[int64][]by
 		outputArray = buf.Bytes()
 	}
 
-	patched, _ := sjson.SetRawBytes(eventData, "response.output", outputArray)
+	patched, _ := ojson.SetRawBytes(eventData, "response.output", outputArray)
 	return patched
 }
 
@@ -1253,8 +1463,8 @@ func xaiStatusErr(code int, body []byte) statusErr {
 	if code != http.StatusTooManyRequests {
 		return err
 	}
-	codeStr := strings.ToLower(gjson.GetBytes(body, "code").String())
-	msg := strings.ToLower(gjson.GetBytes(body, "error").String())
+	codeStr := strings.ToLower(ojson.GetBytesNoCopy(body, "code").String())
+	msg := strings.ToLower(ojson.GetBytesNoCopy(body, "error").String())
 	if msg == "" {
 		msg = strings.ToLower(string(body))
 	}
@@ -1273,12 +1483,12 @@ func xaiStatusErr(code int, body []byte) statusErr {
 // error.code / error.message shapes are checked as well as flat bodies.
 func isXAIBadCredentialsBody(body []byte) bool {
 	for _, path := range []string{"code", "error.code", "body.error.code"} {
-		if strings.Contains(strings.ToLower(gjson.GetBytes(body, path).String()), "bad-credentials") {
+		if strings.Contains(strings.ToLower(ojson.GetBytesNoCopy(body, path).String()), "bad-credentials") {
 			return true
 		}
 	}
 	for _, path := range []string{"error", "error.message", "message", "body.error", "body.error.message"} {
-		msg := strings.ToLower(gjson.GetBytes(body, path).String())
+		msg := strings.ToLower(ojson.GetBytesNoCopy(body, path).String())
 		if strings.Contains(msg, "access token could not be validated") {
 			return true
 		}
