@@ -3,14 +3,13 @@ package cache
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/MoeForge/moego/base64"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/base64"
 	"github.com/MoeForge/moego/ojson"
 	homekv "github.com/router-for-me/CLIProxyAPI/v8/internal/home"
 )
@@ -130,7 +129,7 @@ func validCodexReasoningReplayItemForTest(seed byte) []byte {
 
 func mustCodexReasoningReplayJSON(t *testing.T, items [][]byte) []byte {
 	t.Helper()
-	raw, errMarshal := json.Marshal(items)
+	raw, errMarshal := marshalReasoningReplayRawJSONArray(items)
 	if errMarshal != nil {
 		t.Fatalf("marshal replay items: %v", errMarshal)
 	}
@@ -362,6 +361,34 @@ func TestCodexReasoningReplayCacheBatchEvictsWhenFull(t *testing.T) {
 	codexReasoningReplayMu.Unlock()
 	if gotLen >= CodexReasoningReplayCacheMaxEntries {
 		t.Fatalf("cache entries = %d, want batch eviction below max %d", gotLen, CodexReasoningReplayCacheMaxEntries)
+	}
+}
+
+func TestCodexReasoningReplayHomeReadsLegacyBase64EnvelopeAndRewritesRawItems(t *testing.T) {
+	ClearCodexReasoningReplayCache()
+	t.Cleanup(ClearCodexReasoningReplayCache)
+	client := newFakeCodexReasoningReplayKVClient()
+	key := codexReasoningReplayKVKey("gpt-5.4", "session-legacy-envelope")
+	turn := []byte(`{"type":"` + CodexReasoningReplayTurnType + `","id":"legacy-turn"}`)
+	item := validCodexReasoningReplayItemForTest(81)
+	client.values[key] = []byte(`{"generation":"legacy-generation","items":["` +
+		base64.StdEncoding.EncodeToString(turn) + `","` + base64.StdEncoding.EncodeToString(item) + `"]}`)
+	useFakeCodexReasoningReplayKVClient(t, client, true, nil)
+
+	items, found, generation, errGet := GetCodexReasoningReplayItemsAtGenerationRequired(context.Background(), "gpt-5.4", "session-legacy-envelope")
+	if errGet != nil || !found || generation != "legacy-generation" || len(items) != 2 || !bytes.Equal(items[1], item) {
+		t.Fatalf("legacy envelope read = items %q found %v generation %q err %v", items, found, generation, errGet)
+	}
+	next := [][]byte{[]byte(`{"type":"` + CodexReasoningReplayTurnType + `","id":"next-turn"}`), validCodexReasoningReplayItemForTest(82)}
+	if !AppendCodexReasoningReplayItemsAtGenerationBestEffort(context.Background(), "gpt-5.4", "session-legacy-envelope", generation, next) {
+		t.Fatal("append at legacy generation failed")
+	}
+	stored := client.values[key]
+	if got := ojson.GetBytesNoCopy(stored, "items.#").Int(); got != 4 {
+		t.Fatalf("stored item count = %d, want 4 (%s)", got, stored)
+	}
+	if !ojson.GetBytesNoCopy(stored, "items.1").IsObject() || ojson.GetBytesNoCopy(stored, "generation").String() == generation {
+		t.Fatalf("stored envelope must hold raw JSON items under a new generation: %s", stored)
 	}
 }
 

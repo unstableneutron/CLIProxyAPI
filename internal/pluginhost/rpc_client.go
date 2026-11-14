@@ -49,12 +49,13 @@ type rpcQuotaProvider struct {
 }
 
 type rpcError struct {
-	Code       string
-	message    string
-	statusCode int
-	scope      string
-	retryable  bool
-	retryAfter *time.Duration
+	Code             string
+	message          string
+	statusCode       int
+	scope            string
+	retryable        bool
+	retryAfter       *time.Duration
+	credentialScoped bool
 }
 
 func (e rpcError) Error() string {
@@ -69,9 +70,24 @@ func (e rpcError) StatusCode() int {
 	return e.statusCode
 }
 
-func (e rpcError) IsRequestScoped() bool    { return e.scope == "request" }
-func (e rpcError) IsCredentialScoped() bool { return e.scope == "credential" }
-func (e rpcError) Retryable() bool          { return e.retryable }
+func (e rpcError) IsCredentialScoped() bool {
+	return e.scope == "credential" || e.credentialScoped || strings.EqualFold(strings.TrimSpace(e.Code), pluginabi.ErrorCodeCredentialQuota)
+}
+
+func (e rpcError) IsRequestScoped() bool {
+	return !e.IsCredentialScoped() && (e.scope == "request" || strings.EqualFold(strings.TrimSpace(e.Code), pluginabi.ErrorCodeRequestScoped))
+}
+
+func (e rpcError) IsTransientRateLimit() bool {
+	return !e.IsCredentialScoped() && strings.EqualFold(strings.TrimSpace(e.Code), pluginabi.ErrorCodeTransientRateLimit)
+}
+
+func (e rpcError) IsStreamTruncated() bool {
+	return !e.IsCredentialScoped() && strings.EqualFold(strings.TrimSpace(e.Code), pluginabi.ErrorCodeStreamTruncated)
+}
+
+func (e rpcError) Retryable() bool { return e.retryable }
+
 func (e rpcError) RetryAfter() *time.Duration {
 	if e.retryAfter == nil {
 		return nil
@@ -116,6 +132,7 @@ func decodePluginFailure(failure *pluginabi.Error, legacyMessage string) error {
 	err := rpcError{
 		Code: strings.TrimSpace(failure.Code), message: message,
 		statusCode: failure.HTTPStatus, scope: failure.Scope, retryable: failure.Retryable,
+		credentialScoped: failure.CredentialScoped,
 	}
 	if ms := failure.RetryAfterMS; ms != nil && *ms >= 0 && *ms <= int64((1<<63-1)/time.Millisecond) {
 		delay := time.Duration(*ms) * time.Millisecond

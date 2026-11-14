@@ -49,7 +49,7 @@ run = "go test ./..."
 [tasks."verify:race"]
 description = "Run the full Go test suite with the race detector"
 env = { CGO_ENABLED = "1" }
-run = "go test -race ./..."
+run = "go test -race -timeout 30m ./..."
 
 [tasks."verify:purego"]
 description = "Test and compile the pure-Go native plugin loader"

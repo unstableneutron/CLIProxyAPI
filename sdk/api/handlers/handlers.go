@@ -635,6 +635,20 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 
 	if requestCtx != nil {
 		parentCtx = httptransport.InheritDecorator(parentCtx, requestCtx)
+		parentCtx = logging.InheritDeferredCapture(parentCtx, requestCtx)
+	}
+	if c != nil && logging.DeferredAPICaptureFromContext(parentCtx) == nil && !logging.DeferredAPIRequestCaptureDisabled(parentCtx) {
+		// Bind the capture while the request is live so stream producers that outlive
+		// the handler never fall back to the pooled Gin context.
+		var capture *logging.DeferredAPICapture
+		if value, exists := c.Get(logging.DeferredAPIResponseContextKey); exists {
+			capture, _ = value.(*logging.DeferredAPICapture)
+		}
+		if capture == nil {
+			capture = logging.NewDeferredAPICapture()
+			c.Set(logging.DeferredAPIResponseContextKey, capture)
+		}
+		parentCtx = logging.WithDeferredAPICapture(parentCtx, capture)
 	}
 	if requestCtx != nil && logging.GetRequestID(parentCtx) == "" {
 		if requestID := logging.GetRequestID(requestCtx); requestID != "" {

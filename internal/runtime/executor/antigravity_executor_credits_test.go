@@ -32,6 +32,7 @@ func resetAntigravityCreditsRetryState() {
 		state.mu.Unlock()
 		return true
 	})
+	antigravityTOSPauseUntil.Clear()
 	antigravityCreditsFailureByAuth.Clear()
 	antigravityShortCooldownByAuth.Clear()
 	antigravityCreditsBalanceByAuth.Clear()

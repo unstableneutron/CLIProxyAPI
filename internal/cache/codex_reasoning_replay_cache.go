@@ -2,7 +2,6 @@ package cache
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -47,8 +46,8 @@ type codexReasoningReplayEntry struct {
 }
 
 type codexReasoningReplayStoredEntry struct {
-	Generation string   `json:"generation"`
-	Items      [][]byte `json:"items,omitempty"`
+	Generation string
+	Items      [][]byte
 }
 
 var (
@@ -99,7 +98,7 @@ func CacheCodexReasoningReplayItemsBestEffort(ctx context.Context, modelName, se
 			log.Errorf("home kv best-effort codex reasoning replay set failed prefix=cpa:codex:*: %v", errClient)
 			return false
 		}
-		raw, errMarshal := json.Marshal(codexReasoningReplayStoredEntry{
+		raw, errMarshal := encodeCodexReasoningReplayStoredEntry(codexReasoningReplayStoredEntry{
 			Generation: uuid.NewString(),
 			Items:      normalized,
 		})
@@ -177,7 +176,7 @@ func appendCodexReasoningReplayItemsBestEffort(ctx context.Context, modelName, s
 				var errDecode error
 				stored, errDecode = decodeCodexReasoningReplayStoredEntry(existingRaw)
 				if errDecode != nil {
-					log.Errorf("home kv best-effort codex reasoning replay append failed prefix=cpa:codex:*: %v", errDecode)
+					log.Errorf("home kv best-effort codex reasoning replay append failed prefix=cpa:codex:* (please upgrade CLIProxyAPI): %v", errDecode)
 					return false
 				}
 			}
@@ -186,7 +185,7 @@ func appendCodexReasoningReplayItemsBestEffort(ctx context.Context, modelName, s
 			}
 			stored.Items = appendCodexReasoningReplayTurn(stored.Items, normalized)
 			stored.Generation = uuid.NewString()
-			raw, errMarshal := json.Marshal(stored)
+			raw, errMarshal := encodeCodexReasoningReplayStoredEntry(stored)
 			if errMarshal != nil {
 				log.Errorf("home kv best-effort codex reasoning replay append failed prefix=cpa:codex:*: %v", errMarshal)
 				return false
@@ -334,7 +333,7 @@ func GetCodexReasoningReplayItemsAtGenerationRequired(ctx context.Context, model
 			}
 			if stored.Generation == "" {
 				stored.Generation = uuid.NewString()
-				migrated, errMarshal := json.Marshal(stored)
+				migrated, errMarshal := encodeCodexReasoningReplayStoredEntry(stored)
 				if errMarshal != nil {
 					return nil, false, "", errMarshal
 				}
@@ -415,7 +414,7 @@ func InvalidateCodexReasoningReplayItemsRequired(ctx context.Context, modelName,
 			}
 			stored.Generation = uuid.NewString()
 			stored.Items = nil
-			raw, errMarshal := json.Marshal(stored)
+			raw, errMarshal := encodeCodexReasoningReplayStoredEntry(stored)
 			if errMarshal != nil {
 				return errMarshal
 			}
@@ -490,21 +489,51 @@ func codexReasoningReplayCacheKey(modelName, sessionKey string) string {
 }
 
 func codexReasoningReplayKVKey(modelName, sessionKey string) string {
-	// Keep the generation envelope isolated from legacy array-only readers
-	// during rolling upgrades; replay state is ephemeral and may safely restart.
-	return "cpa:codex:reasoning-replay-v2:" + homekv.HashKeyPart(strings.TrimSpace(modelName)) + ":" + homekv.HashKeyPart(strings.TrimSpace(sessionKey))
+	// Keep each stored format isolated from older readers during rolling
+	// upgrades and rollbacks (v2 held base64 items, v3 holds raw JSON items);
+	// replay state is ephemeral and may safely restart.
+	return "cpa:codex:reasoning-replay-v3:" + homekv.HashKeyPart(strings.TrimSpace(modelName)) + ":" + homekv.HashKeyPart(strings.TrimSpace(sessionKey))
 }
 
+// encodeCodexReasoningReplayStoredEntry stores items as raw JSON inside the
+// generation envelope, avoiding base64 encoding of each item.
+func encodeCodexReasoningReplayStoredEntry(stored codexReasoningReplayStoredEntry) ([]byte, error) {
+	items, errItems := marshalReasoningReplayRawJSONArray(stored.Items)
+	if errItems != nil {
+		return nil, errItems
+	}
+	doc := ojson.NewDocString("{}")
+	if errSet := doc.Set("generation", stored.Generation); errSet != nil {
+		return nil, errSet
+	}
+	if errSet := doc.SetRawBytes("items", items); errSet != nil {
+		return nil, errSet
+	}
+	return doc.Bytes(), nil
+}
+
+// decodeCodexReasoningReplayStoredEntry accepts the generation envelope and a
+// bare item array; items may be raw JSON objects or legacy base64 strings.
 func decodeCodexReasoningReplayStoredEntry(raw []byte) (codexReasoningReplayStoredEntry, error) {
-	var stored codexReasoningReplayStoredEntry
-	if errUnmarshal := json.Unmarshal(raw, &stored); errUnmarshal == nil && ojson.GetBytesNoCopy(raw, "generation").Exists() {
-		return stored, nil
+	root := util.ParseGJSONBytesNoCopy(raw)
+	if !root.IsObject() || !root.Get("generation").Exists() {
+		items, errItems := unmarshalReasoningReplayRawJSONArray(raw)
+		if errItems != nil {
+			return codexReasoningReplayStoredEntry{}, errItems
+		}
+		return codexReasoningReplayStoredEntry{Items: items}, nil
 	}
-	var legacyItems [][]byte
-	if errUnmarshal := json.Unmarshal(raw, &legacyItems); errUnmarshal != nil {
-		return codexReasoningReplayStoredEntry{}, errUnmarshal
+	if !ojson.ValidBytes(raw) {
+		return codexReasoningReplayStoredEntry{}, fmt.Errorf("invalid codex reasoning replay KV payload")
 	}
-	stored.Items = legacyItems
+	stored := codexReasoningReplayStoredEntry{Generation: root.Get("generation").String()}
+	if itemsResult := root.Get("items"); itemsResult.Exists() && itemsResult.Type != ojson.Null {
+		items, errItems := unmarshalReasoningReplayRawJSONArray([]byte(itemsResult.Raw))
+		if errItems != nil {
+			return codexReasoningReplayStoredEntry{}, errItems
+		}
+		stored.Items = items
+	}
 	return stored, nil
 }
 
