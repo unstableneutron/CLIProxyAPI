@@ -2,7 +2,6 @@ package pluginhost
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -10,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/json"
 	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -92,8 +92,8 @@ func TestPluginErrorCarriesRetryAfterIntoCooldownAndHTTPHeader(t *testing.T) {
 	if errExec == nil {
 		t.Fatal("authMgr.Execute returned nil error")
 	}
-	// The terminal 429 advertises the pool's real recovery deadline: MarkResult
-	// clamps the 7s hint up to the 10s quota cooldown floor.
+	// MarkResult clamps the 7s Retry-After hint up to the 10s quota cooldown
+	// floor for both the model state and the terminal pool Retry-After header.
 	if got := coreauth.SafeResponseHeaders(errExec).Get("Retry-After"); got != "10" {
 		t.Fatalf("SafeResponseHeaders(errExec) Retry-After = %q, want 10", got)
 	}
@@ -102,8 +102,8 @@ func TestPluginErrorCarriesRetryAfterIntoCooldownAndHTTPHeader(t *testing.T) {
 		t.Fatalf("GetByID(%q) missing", authID)
 	}
 	state := updated.ModelStates[model]
-	if state == nil || !state.NextRetryAfter.After(before.Add(5*time.Second)) {
-		t.Fatalf("model NextRetryAfter = %v, want at least %v (7s cooldown)", state, before.Add(7*time.Second))
+	if state == nil || !state.NextRetryAfter.After(before.Add(9*time.Second)) {
+		t.Fatalf("model NextRetryAfter = %v, want at least %v (10s cooldown floor)", state, before.Add(10*time.Second))
 	}
 }
 
