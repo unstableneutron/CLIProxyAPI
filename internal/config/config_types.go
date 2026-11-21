@@ -147,6 +147,16 @@ type ClaudeConfig struct {
 	// KV) is active, session date pins are persisted permanently and
 	// session-date-pin-days is ignored.
 	SessionDatePinDays *int `yaml:"session-date-pin-days" json:"session-date-pin-days"`
+	// OAuthIncludeCreateAPIKey controls whether new Claude OAuth authorization
+	// URLs request the org:create_api_key scope in addition to ClaudeOAuthScope.
+	// Nil defaults to true to match native Claude Code.
+	OAuthIncludeCreateAPIKey *bool `yaml:"oauth-include-create-api-key,omitempty" json:"oauth-include-create-api-key,omitempty"`
+}
+
+// OAuthIncludeCreateAPIKeyEnabled reports whether Claude OAuth authorization
+// requests should include the org:create_api_key scope.
+func (c *ClaudeConfig) OAuthIncludeCreateAPIKeyEnabled() bool {
+	return c == nil || c.OAuthIncludeCreateAPIKey == nil || *c.OAuthIncludeCreateAPIKey
 }
 
 // DefaultClaudeSessionDatePinDays is the session date pin retention applied
@@ -300,7 +310,7 @@ type AntigravityConnectionPoolConfig struct {
 	IdleConnTimeout string `yaml:"idle-conn-timeout,omitempty" json:"idle-conn-timeout,omitempty"`
 
 	// MaxIdleConnsPerHost specifies the maximum number of idle connections to retain per host per credential.
-	// Defaults to 2.
+	// Defaults to 2. Zero or negative values disable idle pooling (short-lived connection mode).
 	MaxIdleConnsPerHost *int `yaml:"max-idle-conns-per-host,omitempty" json:"max-idle-conns-per-host,omitempty"`
 }
 

@@ -24,3 +24,11 @@ jobs:
         run: mise run verify:race
       - name: Verify pure-Go plugin loader
         run: mise run verify:purego
+      - name: Cross-build for Solaris
+        env:
+          GOOS: solaris
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          go build -o test-output-solaris ./cmd/server
+          rm -f test-output-solaris
